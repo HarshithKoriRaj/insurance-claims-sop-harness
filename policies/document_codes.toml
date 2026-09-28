@@ -1,0 +1,19 @@
+# Every document label used in the fixtures, from claims and from guidance keys,
+# mapped to one document code. Callers always see the claim's own label, so a
+# guidance key's "original" never becomes a stated requirement.
+version = "2026-09-28"
+
+[codes.PATHOLOGY_REPORT]
+labels = ["pathology report", "original pathology report"]
+
+[codes.PROVIDER_OFFICE_NOTE]
+labels = ["office note", "treating provider office note"]
+
+[codes.DIAGNOSIS_REPORT]
+labels = ["diagnosis report"]
+
+[codes.REPAIR_ESTIMATE]
+labels = ["repair estimate"]
+
+[codes.ACCIDENT_SCENE_PHOTOS]
+labels = ["supplemental accident scene photos"]

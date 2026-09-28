@@ -45,3 +45,10 @@ def policy(policies_dir):
     from app.policies import load_policy
 
     return load_policy(policies_dir / "defaults.toml")
+
+
+@pytest.fixture(scope="session")
+def catalog(policies_dir):
+    from app.claims.documents import load_document_catalog
+
+    return load_document_catalog(policies_dir / "document_codes.toml")
