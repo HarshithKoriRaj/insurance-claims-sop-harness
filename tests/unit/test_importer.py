@@ -103,3 +103,70 @@ def test_validation_errors_do_not_echo_record_values(fixture_copy, catalog):
     assert "policyholders.json" in message and "id_last4" in message
     assert "44720" not in message
     assert caught.value.__cause__ is None
+
+
+def test_reference_errors_do_not_echo_names(fixture_copy, catalog):
+    fixture_copy.edit("representatives.json", lambda reps: reps[0].update(buyer_party_id="P99"))
+    with pytest.raises(FixtureError, match=r"\[0\] buyer does not match a policyholder \(P99\)") as caught:
+        load_fixtures(fixture_copy.path, catalog)
+    assert "Chen" not in str(caught.value)
+
+
+def test_duplicate_policy_numbers_name_the_parties_not_the_number(fixture_copy, catalog):
+    fixture_copy.edit("policyholders.json", lambda holders: holders[1].update(policy_number="POL-9921"))
+    with pytest.raises(FixtureError, match="parties share a policy number: P7, P9") as caught:
+        load_fixtures(fixture_copy.path, catalog)
+    assert "POL-" not in str(caught.value)
+
+
+def _drop_default_alternative(guideline):
+    del guideline["document_alternative_guidance"]["default"]
+
+
+def _add_unmapped_guidance_key(guideline):
+    guideline["document_guidance"]["x-ray"] = {"en": "text"}
+
+
+def _duplicate_party_id(holders):
+    holders[1]["party_id"] = holders[0]["party_id"]
+
+
+@pytest.mark.parametrize(
+    ("name", "change", "message"),
+    [
+        ("required_document_guideline.json", _drop_default_alternative, "has no default"),
+        ("required_document_guideline.json", _add_unmapped_guidance_key, "'x-ray' has no document code"),
+        ("policyholders.json", _duplicate_party_id, "duplicate party_id: P9"),
+    ],
+    ids=["missing-default-alternative", "unmapped-guidance-key", "duplicate-party-id"],
+)
+def test_other_reference_errors_are_rejected(fixture_copy, catalog, name, change, message):
+    fixture_copy.edit(name, change)
+    with pytest.raises(FixtureError, match=message):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+def test_repeated_keys_in_a_json_object_are_rejected(fixture_copy, catalog):
+    path = fixture_copy.path / "claims.json"
+    text = path.read_text(encoding="utf-8")
+    assert '"status": "denied",' in text
+    repeated = text.replace('"status": "denied",', '"status": "denied", "status": "open",', 1)
+    path.write_text(repeated, encoding="utf-8")
+    with pytest.raises(FixtureError, match="claims.json: repeated key in one JSON object: status"):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"{not json", '[{"rep_name": "L\u00f3pez"}]'.encode("latin-1"), None],
+    ids=["malformed-json", "not-utf8", "missing-file"],
+)
+def test_unreadable_files_are_named_without_chaining(fixture_copy, catalog, content):
+    path = fixture_copy.path / "representatives.json"
+    if content is None:
+        path.unlink()
+    else:
+        path.write_bytes(content)
+    with pytest.raises(FixtureError, match="representatives.json") as caught:
+        load_fixtures(fixture_copy.path, catalog)
+    assert caught.value.__cause__ is None
