@@ -12,9 +12,13 @@ from app.policies import Policy
 
 
 class Clock(Protocol):
-    def now(self) -> datetime: ...
+    def now(self) -> datetime:
+        """The current instant as an aware UTC datetime; drives session and verification expiry."""
+        ...
 
-    def business_date(self) -> date: ...
+    def business_date(self) -> date:
+        """The only source of "today" for business rules such as appeal deadlines."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,8 @@ def build_clock(app_mode: str, policy: Policy, business_date_override: str | Non
                 return DemoClock(date.fromisoformat(business_date_override))
             except ValueError:
                 raise ClockConfigError(
-                    f"business-date override {business_date_override!r} is not an ISO date"
+                    f"business-date override {business_date_override!r} is not an ISO date; "
+                    "expected YYYY-MM-DD or 'today'"
                 ) from None
         return DemoClock(policy.demo.business_date)
     raise ClockConfigError(f"unknown APP_MODE {app_mode!r}; expected 'demo' or 'production'")

@@ -521,7 +521,7 @@ git commit -m "feat: load versioned policy defaults"
 `tests/unit/test_clock.py`:
 
 ```python
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -549,7 +549,7 @@ def test_malformed_override_is_a_configuration_error(policy):
 
 @pytest.mark.parametrize("override", ["2026-03-01", "today"])
 def test_production_mode_rejects_any_business_date_override(policy, override):
-    with pytest.raises(ClockConfigError):
+    with pytest.raises(ClockConfigError, match="not allowed in production"):
         build_clock("production", policy, override)
 
 
@@ -558,12 +558,23 @@ def test_production_mode_uses_the_system_clock(policy):
 
 
 def test_unknown_mode_is_rejected(policy):
-    with pytest.raises(ClockConfigError):
+    with pytest.raises(ClockConfigError, match="unknown APP_MODE"):
         build_clock("staging", policy)
 
 
-def test_session_time_is_real_and_timezone_aware(policy):
-    assert build_clock("demo", policy).now().tzinfo is not None
+def test_business_date_follows_the_business_time_zone(policy, monkeypatch):
+    # 05:30 UTC on 2 March is still 1 March in Los Angeles.
+    monkeypatch.setattr(SystemClock, "now", lambda self: datetime(2026, 3, 2, 5, 30, tzinfo=UTC))
+    assert build_clock("production", policy).business_date() == date(2026, 3, 1)
+
+
+@pytest.mark.parametrize(
+    ("mode", "override"), [("demo", None), ("demo", "2026-09-28"), ("demo", "today"), ("production", None)]
+)
+def test_session_time_is_real_utc(policy, mode, override):
+    now = build_clock(mode, policy, override).now()
+    assert now.utcoffset() == timedelta(0)
+    assert abs(now - datetime.now(UTC)) < timedelta(seconds=5)
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -590,9 +601,13 @@ from app.policies import Policy
 
 
 class Clock(Protocol):
-    def now(self) -> datetime: ...
+    def now(self) -> datetime:
+        """The current instant as an aware UTC datetime; drives session and verification expiry."""
+        ...
 
-    def business_date(self) -> date: ...
+    def business_date(self) -> date:
+        """The only source of "today" for business rules such as appeal deadlines."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -635,7 +650,8 @@ def build_clock(app_mode: str, policy: Policy, business_date_override: str | Non
                 return DemoClock(date.fromisoformat(business_date_override))
             except ValueError:
                 raise ClockConfigError(
-                    f"business-date override {business_date_override!r} is not an ISO date"
+                    f"business-date override {business_date_override!r} is not an ISO date; "
+                    "expected YYYY-MM-DD or 'today'"
                 ) from None
         return DemoClock(policy.demo.business_date)
     raise ClockConfigError(f"unknown APP_MODE {app_mode!r}; expected 'demo' or 'production'")
@@ -644,7 +660,7 @@ def build_clock(app_mode: str, policy: Policy, business_date_override: str | Non
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_clock.py -v`
-Expected: PASS (9 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Commit**
 
