@@ -18,7 +18,7 @@ _ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 def _money(value: object) -> Decimal:
     """Two-place decimal strings from JSON, or an equivalent Decimal on round trips. Never floats."""
     if isinstance(value, Decimal):
-        if value.is_finite() and value >= 0 and value.as_tuple().exponent == -2:
+        if value.is_finite() and not value.is_signed() and value.as_tuple().exponent == -2:
             return value
     elif isinstance(value, str) and _MONEY.fullmatch(value):
         return Decimal(value)
@@ -67,8 +67,8 @@ class Claim(_Strict):
     case_type: CaseType
     created_at: IsoDate
     status: Literal["denied", "closed", "open"]
-    summary: str
-    denial_reason: str | None = None
+    summary: NonEmpty
+    denial_reason: NonEmpty | None = None
     documents_needed: tuple[NonEmpty, ...] = ()
     appeal_deadline: IsoDate | None = None
     expected_reimbursement_amount: Money

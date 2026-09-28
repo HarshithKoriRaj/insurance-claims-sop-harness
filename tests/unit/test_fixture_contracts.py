@@ -68,7 +68,21 @@ def test_remaining_fixture_files_validate(fixtures_dir):
     DocumentGuideline.model_validate(_read(fixtures_dir, "required_document_guideline.json"))
 
 
-@pytest.mark.parametrize("bad", [1450.0, "1450", "1,450.00", "abc", "-1.00", "١٤٥٠.٠٠"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        1450.0,
+        "1450",
+        "1,450.00",
+        "abc",
+        "-1.00",
+        "١٤٥٠.٠٠",
+        Decimal("1450.5"),
+        Decimal("-1.00"),
+        Decimal("-0.00"),
+        Decimal("NaN"),
+    ],
+)
 def test_money_must_be_a_two_place_decimal_string(bad):
     with pytest.raises(ValidationError):
         Claim.model_validate({**VALID_CLAIM, "net_pay": bad})
@@ -138,8 +152,9 @@ def test_requires_documents_must_be_a_real_boolean(fixtures_dir):
         (Policyholder, {**VALID_HOLDER, "id_type": "passport_last4"}),
         (Policyholder, {**VALID_HOLDER, "party_id": ""}),
         (ConsentScenario, {"status_sequence": []}),
+        (Claim, {**VALID_CLAIM, "status": "denied", "denial_reason": ""}),
     ],
-    ids=["unknown-id-type", "empty-party-id", "empty-consent-sequence"],
+    ids=["unknown-id-type", "empty-party-id", "empty-consent-sequence", "empty-denial-reason"],
 )
 def test_other_invalid_records_are_rejected(model, data):
     with pytest.raises(ValidationError):
