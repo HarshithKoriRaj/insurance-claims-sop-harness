@@ -769,6 +769,12 @@ def test_id_last4_keeps_leading_zeros():
 def test_id_last4_must_be_a_four_digit_string():
     with pytest.raises(ValidationError):
         Policyholder.model_validate({**VALID_HOLDER, "id_last4": 42})
+
+
+@pytest.mark.parametrize(("field", "value"), [("email", "not-an-email"), ("email_aliases", ["a@b"])])
+def test_emails_on_file_must_be_addresses(field, value):
+    with pytest.raises(ValidationError):
+        Policyholder.model_validate({**VALID_HOLDER, field: value})
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -810,6 +816,7 @@ def _money(value: object) -> Decimal:
 
 Money = Annotated[Decimal, BeforeValidator(_money)]
 E164 = Annotated[str, StringConstraints(pattern=r"^\+[1-9]\d{7,14}$")]
+Email = Annotated[str, StringConstraints(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
 Last4 = Annotated[str, StringConstraints(pattern=r"^\d{4}$")]
 CaseType = Literal["healthcare", "dental", "auto"]
 
@@ -828,8 +835,8 @@ class Policyholder(_Strict):
     id_last4: Last4
     phone: E164
     phone_aliases: tuple[E164, ...] = ()
-    email: str
-    email_aliases: tuple[str, ...] = ()
+    email: Email
+    email_aliases: tuple[Email, ...] = ()
 
 
 class Claim(_Strict):
@@ -900,7 +907,7 @@ class DocumentGuideline(_Strict):
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_fixture_contracts.py -v`
-Expected: PASS (11 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Commit**
 
