@@ -242,34 +242,86 @@ from pydantic import ValidationError
 from app.policies import load_policy
 
 
+def _write_variant(policies_dir, tmp_path, old, new):
+    text = (policies_dir / "defaults.toml").read_text()
+    assert old in text, f"test setup: {old!r} not found in defaults.toml"
+    path = tmp_path / "defaults.toml"
+    path.write_text(text.replace(old, new))
+    return path
+
+
 def test_defaults_match_the_architecture_plan(policies_dir):
     policy = load_policy(policies_dir / "defaults.toml")
+    assert policy.version == "2026-09-28"
     assert policy.verification.required_matching_fields == 3
     assert policy.verification.max_failed_submissions == 3
     assert policy.verification.idle_expiry_minutes == 30
     assert policy.verification.permitted_fields == ("full_name", "dob", "phone", "email", "ssn_last4")
     assert policy.session.max_age_hours == 8
     assert policy.session.max_input_characters == 8000
+    assert policy.session.recent_turns == 12
+    assert policy.session.max_turns == 60
     assert policy.recovery.unrelated_offer_human_at == 2
     assert policy.recovery.unrelated_stop_at == 3
-    assert policy.recovery.refusals_before_stop == 2
+    assert policy.recovery.refusal_stop_at == 2
     assert policy.claims.fact_max_age_minutes == 5
+    assert policy.phone.default_country_calling_code == "1"
+    assert policy.phone.national_number_length == 10
+    assert policy.business.timezone == "America/Los_Angeles"
     assert policy.demo.business_date == date(2026, 3, 1)
 
 
-def test_unknown_keys_are_rejected(policies_dir, tmp_path):
-    path = tmp_path / "defaults.toml"
-    path.write_text((policies_dir / "defaults.toml").read_text() + "\n[surprise]\nkey = 1\n")
-    with pytest.raises(ValidationError):
-        load_policy(path)
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("fact_max_age_minutes = 5", "fact_max_age_minutes = 5\n\n[surprise]\nkey = 1"),
+        ("max_failed_submissions = 3", "max_failed_submissions = 3\nsurprise = 1"),
+    ],
+    ids=["top-level-table", "nested-key"],
+)
+def test_unknown_keys_are_rejected(policies_dir, tmp_path, old, new):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        load_policy(_write_variant(policies_dir, tmp_path, old, new))
 
 
-def test_national_id_cannot_be_added_as_a_permitted_field(policies_dir, tmp_path):
-    path = tmp_path / "defaults.toml"
-    text = (policies_dir / "defaults.toml").read_text()
-    path.write_text(text.replace('"ssn_last4"]', '"ssn_last4", "national_id_last4"]'))
-    with pytest.raises(ValidationError):
-        load_policy(path)
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("required_matching_fields = 3", "required_matching_fields = 2", "greater than or equal to 3"),
+        ("required_matching_fields = 3", "required_matching_fields = true", "greater than or equal to 3"),
+        ("required_matching_fields = 3", "required_matching_fields = 6", "exceeds the number of permitted fields"),
+        (
+            'permitted_fields = ["full_name", "dob", "phone", "email", "ssn_last4"]',
+            'permitted_fields = ["dob", "dob", "dob"]',
+            "must not repeat",
+        ),
+        ('"ssn_last4"]', '"ssn_last4", "national_id_last4"]', "permitted_fields"),
+        ("unrelated_offer_human_at = 2", "unrelated_offer_human_at = 3", "must come before"),
+        ("recent_turns = 12", "recent_turns = 61", "cannot exceed max_turns"),
+        (
+            'default_country_calling_code = "1"\nnational_number_length = 10',
+            'default_country_calling_code = "999"\nnational_number_length = 14',
+            "exceeds 15 digits",
+        ),
+        ('timezone = "America/Los_Angeles"', 'timezone = "america/los_angeles"', "unknown IANA time zone"),
+        ('version = "2026-09-28"', 'version = ""', "at least 1 character"),
+    ],
+    ids=[
+        "below-three-fields",
+        "boolean-threshold",
+        "more-fields-than-permitted",
+        "repeated-field",
+        "national-id-field",
+        "offer-after-stop",
+        "recent-exceeds-max-turns",
+        "phone-longer-than-e164",
+        "timezone-wrong-case",
+        "empty-version",
+    ],
+)
+def test_unsafe_or_incoherent_settings_are_rejected(policies_dir, tmp_path, old, new, message):
+    with pytest.raises(ValidationError, match=message):
+        load_policy(_write_variant(policies_dir, tmp_path, old, new))
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -287,6 +339,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.policies'`
 version = "2026-09-28"
 
 [verification]
+# The architecture requires at least three distinct permitted fields; the loader rejects fewer.
 required_matching_fields = 3
 max_failed_submissions = 3
 idle_expiry_minutes = 30
@@ -302,8 +355,8 @@ max_turns = 60
 # Consecutive unrelated requests: the 2nd offers a human, the 3rd stops answering them.
 unrelated_offer_human_at = 2
 unrelated_stop_at = 3
-# Explicit refusals to continue verification before persuasion stops.
-refusals_before_stop = 2
+# Persuasion stops at the 2nd explicit refusal to continue verification.
+refusal_stop_at = 2
 
 [claims]
 fact_max_age_minutes = 5
@@ -313,9 +366,13 @@ fact_max_age_minutes = 5
 default_country_calling_code = "1"
 national_number_length = 10
 
+[business]
+# Used in every mode for business dates such as appeal deadlines.
+timezone = "America/Los_Angeles"
+
 [demo]
+# Demo mode pins the business date; production mode rejects any override.
 business_date = 2026-03-01
-business_timezone = "America/Los_Angeles"
 ```
 
 `services/api/app/policies.py`:
@@ -328,11 +385,15 @@ from __future__ import annotations
 import tomllib
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
+from zoneinfo import available_timezones
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 IdentityField = Literal["full_name", "dob", "phone", "email", "ssn_last4"]
+
+MIN_MATCHING_FIELDS = 3  # Non-negotiable invariant 2 in docs/2026-09-28-sop-harness-plan.md.
+E164_MAX_DIGITS = 15
 
 
 class _Strict(BaseModel):
@@ -340,10 +401,18 @@ class _Strict(BaseModel):
 
 
 class VerificationPolicy(_Strict):
-    required_matching_fields: int = Field(ge=1)
+    required_matching_fields: int = Field(ge=MIN_MATCHING_FIELDS)
     max_failed_submissions: int = Field(ge=1)
     idle_expiry_minutes: int = Field(ge=1)
     permitted_fields: tuple[IdentityField, ...]
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if len(set(self.permitted_fields)) != len(self.permitted_fields):
+            raise ValueError("permitted_fields must not repeat a field")
+        if self.required_matching_fields > len(self.permitted_fields):
+            raise ValueError("required_matching_fields exceeds the number of permitted fields")
+        return self
 
 
 class SessionPolicy(_Strict):
@@ -352,11 +421,23 @@ class SessionPolicy(_Strict):
     recent_turns: int = Field(ge=1)
     max_turns: int = Field(ge=1)
 
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if self.recent_turns > self.max_turns:
+            raise ValueError("recent_turns cannot exceed max_turns")
+        return self
+
 
 class RecoveryPolicy(_Strict):
     unrelated_offer_human_at: int = Field(ge=1)
     unrelated_stop_at: int = Field(ge=1)
-    refusals_before_stop: int = Field(ge=1)
+    refusal_stop_at: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if self.unrelated_offer_human_at >= self.unrelated_stop_at:
+            raise ValueError("unrelated_offer_human_at must come before unrelated_stop_at")
+        return self
 
 
 class ClaimsPolicy(_Strict):
@@ -367,19 +448,37 @@ class PhonePolicy(_Strict):
     default_country_calling_code: str = Field(pattern=r"^[1-9]\d{0,2}$")
     national_number_length: int = Field(ge=4, le=14)
 
+    @model_validator(mode="after")
+    def _fits_e164(self) -> Self:
+        if len(self.default_country_calling_code) + self.national_number_length > E164_MAX_DIGITS:
+            raise ValueError(f"country code plus national number exceeds {E164_MAX_DIGITS} digits")
+        return self
+
+
+class BusinessPolicy(_Strict):
+    timezone: str
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_timezone(cls, value: str) -> str:
+        # Exact IANA names only: a case-insensitive filesystem would accept "america/los_angeles".
+        if value not in available_timezones():
+            raise ValueError(f"unknown IANA time zone {value!r}")
+        return value
+
 
 class DemoPolicy(_Strict):
     business_date: date
-    business_timezone: str
 
 
 class Policy(_Strict):
-    version: str
+    version: str = Field(min_length=1)
     verification: VerificationPolicy
     session: SessionPolicy
     recovery: RecoveryPolicy
     claims: ClaimsPolicy
     phone: PhonePolicy
+    business: BusinessPolicy
     demo: DemoPolicy
 
 
@@ -401,7 +500,7 @@ def policy(policies_dir):
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_policies.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -517,7 +616,7 @@ class ClockConfigError(RuntimeError):
 
 
 def build_clock(app_mode: str, policy: Policy, business_date_override: str | None = None) -> Clock:
-    timezone = ZoneInfo(policy.demo.business_timezone)
+    timezone = ZoneInfo(policy.business.timezone)
     if app_mode == "production":
         if business_date_override is not None:
             raise ClockConfigError("a business-date override is not allowed in production mode")
@@ -2034,7 +2133,7 @@ Expected: every test passes; no warnings about missing modules.
 | All six fixtures validate | `test_fixture_contracts.py`, `test_importer.py::test_store_holds_every_fixture_record` |
 | Document aliases resolve | `test_documents.py`, importer label checks, `test_guidance.py` |
 | Date and Decimal behavior tested | `test_money_and_deadlines.py`, `test_fixture_contracts.py` money tests, `test_normalize.py` DOB tests |
-| National ID cannot count as SSN | `test_identity_fields.py::test_national_id_never_counts_as_ssn`, `test_policies.py::test_national_id_cannot_be_added_as_a_permitted_field` |
+| National ID cannot count as SSN | `test_identity_fields.py::test_national_id_never_counts_as_ssn`, `test_policies.py::test_unsafe_or_incoherent_settings_are_rejected[national-id-field]` |
 | Original fixtures unchanged | `test_fixture_integrity.py`, `test_importer.py::test_loading_leaves_fixture_files_untouched` |
 
 - [ ] **Step 3: Confirm the working tree is clean**

@@ -3,6 +3,7 @@
 version = "2026-09-28"
 
 [verification]
+# The architecture requires at least three distinct permitted fields; the loader rejects fewer.
 required_matching_fields = 3
 max_failed_submissions = 3
 idle_expiry_minutes = 30
@@ -18,8 +19,8 @@ max_turns = 60
 # Consecutive unrelated requests: the 2nd offers a human, the 3rd stops answering them.
 unrelated_offer_human_at = 2
 unrelated_stop_at = 3
-# Explicit refusals to continue verification before persuasion stops.
-refusals_before_stop = 2
+# Persuasion stops at the 2nd explicit refusal to continue verification.
+refusal_stop_at = 2
 
 [claims]
 fact_max_age_minutes = 5
@@ -29,6 +30,10 @@ fact_max_age_minutes = 5
 default_country_calling_code = "1"
 national_number_length = 10
 
+[business]
+# Used in every mode for business dates such as appeal deadlines.
+timezone = "America/Los_Angeles"
+
 [demo]
+# Demo mode pins the business date; production mode rejects any override.
 business_date = 2026-03-01
-business_timezone = "America/Los_Angeles"
