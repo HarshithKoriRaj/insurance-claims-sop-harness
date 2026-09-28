@@ -67,7 +67,8 @@ def load_fixtures(directory: Path, catalog: DocumentCatalog) -> FixtureStore:
             text = (directory / name).read_text(encoding="utf-8")
             raw[name] = json.loads(text, object_pairs_hook=_reject_repeated_keys)
         except (OSError, ValueError) as exc:
-            # from None: JSONDecodeError.doc and UnicodeDecodeError.object hold the whole file.
+            # from None keeps the original error out of rendered tracebacks; its .doc
+            # (JSONDecodeError) or .object (UnicodeDecodeError) holds the whole file.
             raise FixtureError(f"{name}: {exc}") from None
         try:
             parsed[name] = adapter.validate_python(raw[name])

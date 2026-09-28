@@ -103,6 +103,7 @@ def test_validation_errors_do_not_echo_record_values(fixture_copy, catalog):
     assert "policyholders.json" in message and "id_last4" in message
     assert "44720" not in message
     assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
 
 
 def test_reference_errors_do_not_echo_names(fixture_copy, catalog):
@@ -127,6 +128,10 @@ def _add_unmapped_guidance_key(guideline):
     guideline["document_guidance"]["x-ray"] = {"en": "text"}
 
 
+def _add_unmapped_alternative_key(guideline):
+    guideline["document_alternative_guidance"]["x-ray"] = {"en": "text"}
+
+
 def _duplicate_party_id(holders):
     holders[1]["party_id"] = holders[0]["party_id"]
 
@@ -135,10 +140,19 @@ def _duplicate_party_id(holders):
     ("name", "change", "message"),
     [
         ("required_document_guideline.json", _drop_default_alternative, "has no default"),
-        ("required_document_guideline.json", _add_unmapped_guidance_key, "'x-ray' has no document code"),
+        (
+            "required_document_guideline.json",
+            _add_unmapped_guidance_key,
+            "document_guidance: document label 'x-ray' has no document code",
+        ),
+        (
+            "required_document_guideline.json",
+            _add_unmapped_alternative_key,
+            "document_alternative_guidance: document label 'x-ray' has no document code",
+        ),
         ("policyholders.json", _duplicate_party_id, "duplicate party_id: P9"),
     ],
-    ids=["missing-default-alternative", "unmapped-guidance-key", "duplicate-party-id"],
+    ids=["missing-default-alternative", "unmapped-guidance-key", "unmapped-alternative-key", "duplicate-party-id"],
 )
 def test_other_reference_errors_are_rejected(fixture_copy, catalog, name, change, message):
     fixture_copy.edit(name, change)
@@ -170,3 +184,4 @@ def test_unreadable_files_are_named_without_chaining(fixture_copy, catalog, cont
     with pytest.raises(FixtureError, match="representatives.json") as caught:
         load_fixtures(fixture_copy.path, catalog)
     assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
