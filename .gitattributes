@@ -1,0 +1,2 @@
+# Fixtures are hashed byte-for-byte by tests/unit/test_fixture_integrity.py; never convert their line endings.
+fixtures/** -text
