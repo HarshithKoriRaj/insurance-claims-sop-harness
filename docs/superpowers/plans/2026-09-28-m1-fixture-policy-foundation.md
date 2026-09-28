@@ -751,7 +751,7 @@ def test_remaining_fixture_files_validate(fixtures_dir):
     DocumentGuideline.model_validate(_read(fixtures_dir, "required_document_guideline.json"))
 
 
-@pytest.mark.parametrize("bad", [1450.0, "1450", "1,450.00", "abc", "-1.00"])
+@pytest.mark.parametrize("bad", [1450.0, "1450", "1,450.00", "abc", "-1.00", "١٤٥٠.٠٠"])
 def test_money_must_be_a_two_place_decimal_string(bad):
     with pytest.raises(ValidationError):
         Claim.model_validate({**VALID_CLAIM, "net_pay": bad})
@@ -762,19 +762,71 @@ def test_unknown_keys_are_rejected():
         Claim.model_validate({**VALID_CLAIM, "surprise": True})
 
 
+def test_unknown_keys_are_rejected_in_nested_models(fixtures_dir):
+    guideline = _read(fixtures_dir, "required_document_guideline.json")
+    guideline["claim_followup_settings"]["surprise"] = {"en": "x"}
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        DocumentGuideline.model_validate(guideline)
+
+
 def test_id_last4_keeps_leading_zeros():
     assert Policyholder.model_validate(VALID_HOLDER).id_last4 == "0042"
 
 
 def test_id_last4_must_be_a_four_digit_string():
     with pytest.raises(ValidationError):
-        Policyholder.model_validate({**VALID_HOLDER, "id_last4": 42})
+        Policyholder.model_validate({**VALID_HOLDER, "id_last4": 4472})
 
 
 @pytest.mark.parametrize(("field", "value"), [("email", "not-an-email"), ("email_aliases", ["a@b"])])
 def test_emails_on_file_must_be_addresses(field, value):
     with pytest.raises(ValidationError):
         Policyholder.model_validate({**VALID_HOLDER, field: value})
+
+
+@pytest.mark.parametrize("bad", ["1773792000", 0, "1985-03-15T00:00:00", "03/15/1985", "٢٠٢٦-٠٣-١٨"])
+def test_dates_must_be_iso_strings(bad):
+    with pytest.raises(ValidationError):
+        Claim.model_validate({**VALID_CLAIM, "created_at": bad})
+
+
+@pytest.mark.parametrize(("field", "value"), [("id_last4", "٠٠٤٢"), ("phone", "+１６５００００００００")])
+def test_only_ascii_digits_are_accepted(field, value):
+    with pytest.raises(ValidationError):
+        Policyholder.model_validate({**VALID_HOLDER, field: value})
+
+
+def test_models_round_trip_through_python_values(fixtures_dir):
+    claims = TypeAdapter(tuple[Claim, ...]).validate_python(_read(fixtures_dir, "claims.json"))
+    holders = TypeAdapter(tuple[Policyholder, ...]).validate_python(_read(fixtures_dir, "policyholders.json"))
+    for record in (*claims, *holders):
+        assert type(record).model_validate(record.model_dump()) == record
+
+
+def test_a_denied_claim_without_a_reason_still_loads():
+    claim = Claim.model_validate({**VALID_CLAIM, "status": "denied"})
+    assert (claim.denial_reason, claim.appeal_deadline, claim.documents_needed) == (None, None, ())
+
+
+def test_requires_documents_must_be_a_real_boolean(fixtures_dir):
+    guideline = _read(fixtures_dir, "required_document_guideline.json")
+    guideline["claim_followup_guidance"][0]["requires_documents"] = "no"
+    with pytest.raises(ValidationError):
+        DocumentGuideline.model_validate(guideline)
+
+
+@pytest.mark.parametrize(
+    ("model", "data"),
+    [
+        (Policyholder, {**VALID_HOLDER, "id_type": "passport_last4"}),
+        (Policyholder, {**VALID_HOLDER, "party_id": ""}),
+        (ConsentScenario, {"status_sequence": []}),
+    ],
+    ids=["unknown-id-type", "empty-party-id", "empty-consent-sequence"],
+)
+def test_other_invalid_records_are_rejected(model, data):
+    with pytest.raises(ValidationError):
+        model.model_validate(data)
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -794,7 +846,8 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.contracts'`
 
 ```python
 """Strict schemas for the six supplied fixture files. Unknown keys are rejected, so
-a changed fixture fails loudly instead of being partly read."""
+a changed fixture fails loudly instead of being partly read. Frozen models block
+attribute assignment; their dicts are shared and must be treated as read-only."""
 
 from __future__ import annotations
 
@@ -803,21 +856,37 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StringConstraints
 
-_MONEY = re.compile(r"^\d+\.\d{2}$")
+_MONEY = re.compile(r"^[0-9]+\.[0-9]{2}$")
+_ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 
 def _money(value: object) -> Decimal:
-    if not isinstance(value, str) or not _MONEY.fullmatch(value):
-        raise ValueError("money must be a decimal string with two places, such as '1450.00'")
-    return Decimal(value)
+    """Two-place decimal strings from JSON, or an equivalent Decimal on round trips. Never floats."""
+    if isinstance(value, Decimal):
+        if value.is_finite() and value >= 0 and value.as_tuple().exponent == -2:
+            return value
+    elif isinstance(value, str) and _MONEY.fullmatch(value):
+        return Decimal(value)
+    raise ValueError("money must be a decimal string with two places, such as '1450.00'")
+
+
+def _iso_date(value: object) -> date:
+    """ISO date strings, or a date (not a datetime) on round trips. Never timestamps."""
+    if type(value) is date:
+        return value
+    if isinstance(value, str) and _ISO_DATE.fullmatch(value):
+        return date.fromisoformat(value)
+    raise ValueError("date must be an ISO string such as '2026-03-18'")
 
 
 Money = Annotated[Decimal, BeforeValidator(_money)]
-E164 = Annotated[str, StringConstraints(pattern=r"^\+[1-9]\d{7,14}$")]
+IsoDate = Annotated[date, BeforeValidator(_iso_date)]
+NonEmpty = Annotated[str, StringConstraints(min_length=1)]
+E164 = Annotated[str, StringConstraints(pattern=r"^\+[1-9][0-9]{7,14}$")]
 Email = Annotated[str, StringConstraints(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
-Last4 = Annotated[str, StringConstraints(pattern=r"^\d{4}$")]
+Last4 = Annotated[str, StringConstraints(pattern=r"^[0-9]{4}$")]
 CaseType = Literal["healthcare", "dental", "auto"]
 
 
@@ -826,11 +895,11 @@ class _Strict(BaseModel):
 
 
 class Policyholder(_Strict):
-    party_id: str
-    name: str
-    name_aliases: tuple[str, ...] = ()
-    policy_number: str
-    dob: date
+    party_id: NonEmpty
+    name: NonEmpty
+    name_aliases: tuple[NonEmpty, ...] = ()
+    policy_number: NonEmpty
+    dob: IsoDate
     id_type: Literal["ssn_last4", "national_id_last4"]
     id_last4: Last4
     phone: E164
@@ -840,15 +909,15 @@ class Policyholder(_Strict):
 
 
 class Claim(_Strict):
-    case_id: str
-    party_id: str
+    case_id: NonEmpty
+    party_id: NonEmpty
     case_type: CaseType
-    created_at: date
+    created_at: IsoDate
     status: Literal["denied", "closed", "open"]
     summary: str
     denial_reason: str | None = None
-    documents_needed: tuple[str, ...] = ()
-    appeal_deadline: date | None = None
+    documents_needed: tuple[NonEmpty, ...] = ()
+    appeal_deadline: IsoDate | None = None
     expected_reimbursement_amount: Money
     allowed_max_amount: Money
     net_pay: Money
@@ -871,10 +940,10 @@ class ConsentScenario(_Strict):
 
 
 class Representative(_Strict):
-    rep_name: str
-    relationship: str
-    buyer_name: str
-    buyer_party_id: str
+    rep_name: NonEmpty
+    relationship: NonEmpty
+    buyer_name: NonEmpty
+    buyer_party_id: NonEmpty
 
 
 class LocalizedText(_Strict):
@@ -882,9 +951,9 @@ class LocalizedText(_Strict):
 
 
 class FollowupRule(_Strict):
-    topic: str
+    topic: NonEmpty
     intent_hints: tuple[str, ...]
-    requires_documents: bool
+    requires_documents: StrictBool
     match_any: tuple[str, ...] = ()
     en: str
 
@@ -907,7 +976,7 @@ class DocumentGuideline(_Strict):
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_fixture_contracts.py -v`
-Expected: PASS (13 tests)
+Expected: PASS (28 tests)
 
 - [ ] **Step 5: Commit**
 

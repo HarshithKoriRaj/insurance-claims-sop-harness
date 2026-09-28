@@ -68,7 +68,7 @@ def test_remaining_fixture_files_validate(fixtures_dir):
     DocumentGuideline.model_validate(_read(fixtures_dir, "required_document_guideline.json"))
 
 
-@pytest.mark.parametrize("bad", [1450.0, "1450", "1,450.00", "abc", "-1.00"])
+@pytest.mark.parametrize("bad", [1450.0, "1450", "1,450.00", "abc", "-1.00", "١٤٥٠.٠٠"])
 def test_money_must_be_a_two_place_decimal_string(bad):
     with pytest.raises(ValidationError):
         Claim.model_validate({**VALID_CLAIM, "net_pay": bad})
@@ -79,16 +79,68 @@ def test_unknown_keys_are_rejected():
         Claim.model_validate({**VALID_CLAIM, "surprise": True})
 
 
+def test_unknown_keys_are_rejected_in_nested_models(fixtures_dir):
+    guideline = _read(fixtures_dir, "required_document_guideline.json")
+    guideline["claim_followup_settings"]["surprise"] = {"en": "x"}
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        DocumentGuideline.model_validate(guideline)
+
+
 def test_id_last4_keeps_leading_zeros():
     assert Policyholder.model_validate(VALID_HOLDER).id_last4 == "0042"
 
 
 def test_id_last4_must_be_a_four_digit_string():
     with pytest.raises(ValidationError):
-        Policyholder.model_validate({**VALID_HOLDER, "id_last4": 42})
+        Policyholder.model_validate({**VALID_HOLDER, "id_last4": 4472})
 
 
 @pytest.mark.parametrize(("field", "value"), [("email", "not-an-email"), ("email_aliases", ["a@b"])])
 def test_emails_on_file_must_be_addresses(field, value):
     with pytest.raises(ValidationError):
         Policyholder.model_validate({**VALID_HOLDER, field: value})
+
+
+@pytest.mark.parametrize("bad", ["1773792000", 0, "1985-03-15T00:00:00", "03/15/1985", "٢٠٢٦-٠٣-١٨"])
+def test_dates_must_be_iso_strings(bad):
+    with pytest.raises(ValidationError):
+        Claim.model_validate({**VALID_CLAIM, "created_at": bad})
+
+
+@pytest.mark.parametrize(("field", "value"), [("id_last4", "٠٠٤٢"), ("phone", "+１６５００００００００")])
+def test_only_ascii_digits_are_accepted(field, value):
+    with pytest.raises(ValidationError):
+        Policyholder.model_validate({**VALID_HOLDER, field: value})
+
+
+def test_models_round_trip_through_python_values(fixtures_dir):
+    claims = TypeAdapter(tuple[Claim, ...]).validate_python(_read(fixtures_dir, "claims.json"))
+    holders = TypeAdapter(tuple[Policyholder, ...]).validate_python(_read(fixtures_dir, "policyholders.json"))
+    for record in (*claims, *holders):
+        assert type(record).model_validate(record.model_dump()) == record
+
+
+def test_a_denied_claim_without_a_reason_still_loads():
+    claim = Claim.model_validate({**VALID_CLAIM, "status": "denied"})
+    assert (claim.denial_reason, claim.appeal_deadline, claim.documents_needed) == (None, None, ())
+
+
+def test_requires_documents_must_be_a_real_boolean(fixtures_dir):
+    guideline = _read(fixtures_dir, "required_document_guideline.json")
+    guideline["claim_followup_guidance"][0]["requires_documents"] = "no"
+    with pytest.raises(ValidationError):
+        DocumentGuideline.model_validate(guideline)
+
+
+@pytest.mark.parametrize(
+    ("model", "data"),
+    [
+        (Policyholder, {**VALID_HOLDER, "id_type": "passport_last4"}),
+        (Policyholder, {**VALID_HOLDER, "party_id": ""}),
+        (ConsentScenario, {"status_sequence": []}),
+    ],
+    ids=["unknown-id-type", "empty-party-id", "empty-consent-sequence"],
+)
+def test_other_invalid_records_are_rejected(model, data):
+    with pytest.raises(ValidationError):
+        model.model_validate(data)
