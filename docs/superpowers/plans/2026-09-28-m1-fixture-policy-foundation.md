@@ -1853,12 +1853,35 @@ def test_human_review_rule_comes_with_provenance(library):
     assert rule.source.endswith("#/claim_followup_settings/human_review_after_document_alternatives_exhausted/en")
 
 
-def test_rendering_refuses_an_empty_placeholder():
-    with pytest.raises(GuidanceRenderError):
-        render_template("Submit {documents} soon.", {"documents": ""})
+def test_labels_for_the_same_document_give_one_snippet(library):
+    snippets = library.for_documents("healthcare", ["pathology report", "original pathology report"])
+    assert [s.topic for s in snippets] == ["default", "case_type:healthcare", "document:PATHOLOGY_REPORT"]
+
+
+def test_sources_are_json_pointers_in_uri_fragment_form(library):
+    assert library.alternatives("pathology report").source == (
+        "required_document_guideline.json#/document_alternative_guidance/original%20pathology%20report/en"
+    )
+
+
+@pytest.mark.parametrize(
+    ("template", "values", "message"),
+    [
+        ("Submit {documents} soon.", {"documents": ""}, r"no value for placeholder \{documents\}"),
+        ("Submit {documents} soon.", {"documents": "   "}, r"no value for placeholder \{documents\}"),
+        ("Submit {documents} soon.", {}, r"no value for placeholder \{documents\}"),
+        ("Submit {Documents} soon.", {"documents": "a pathology report"}, r"no value for placeholder \{Documents\}"),
+        ("Submit {documents soon.", {"documents": "a pathology report"}, "unmatched brace"),
+    ],
+    ids=["empty-value", "blank-value", "missing-value", "unknown-placeholder", "unmatched-brace"],
+)
+def test_rendering_refuses_a_template_it_cannot_fill_completely(template, values, message):
+    with pytest.raises(GuidanceRenderError, match=message):
+        render_template(template, values)
 
 
 def test_natural_list():
+    assert natural_list([]) == ""
     assert natural_list(["a"]) == "a"
     assert natural_list(["a", "b"]) == "a and b"
     assert natural_list(["a", "b", "c"]) == "a, b, and c"
@@ -1882,12 +1905,13 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from app.claims.documents import DocumentCatalog
 from app.contracts.fixtures import Claim, DocumentGuideline, FollowupRule
 
 SOURCE = "required_document_guideline.json"
-_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+_PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 
 
 class UnknownTopic(KeyError):
@@ -1912,9 +1936,13 @@ def natural_list(items: Sequence[str]) -> str:
 
 
 def render_template(template: str, values: Mapping[str, str]) -> str:
+    remainder = _PLACEHOLDER.sub("", template)
+    if "{" in remainder or "}" in remainder:
+        raise GuidanceRenderError("template has an unmatched brace")
+
     def fill(match: re.Match[str]) -> str:
         value = values.get(match.group(1))
-        if not value:
+        if value is None or not value.strip():
             raise GuidanceRenderError(f"no value for placeholder {match.group(0)}")
         return value
 
@@ -1942,24 +1970,27 @@ class GuidanceLibrary:
 
     def for_documents(self, case_type: str, labels: Sequence[str]) -> tuple[GuidanceSnippet, ...]:
         guideline = self._guideline
-        snippets = [GuidanceSnippet("default", guideline.default_guidance.en, f"{SOURCE}#/default_guidance/en")]
+        snippets = [GuidanceSnippet("default", guideline.default_guidance.en, _source("default_guidance", "en"))]
         if case_type in guideline.case_type_guidance:
             snippets.append(
                 GuidanceSnippet(
                     f"case_type:{case_type}",
                     guideline.case_type_guidance[case_type].en,
-                    f"{SOURCE}#/case_type_guidance/{case_type}/en",
+                    _source("case_type_guidance", case_type, "en"),
                 )
             )
+        seen: set[str] = set()
         for label in labels:
             code = self._catalog.code_for(label)
             key = self._document_keys.get(code)
-            if key is not None:
+            # Two labels for one document (an alias and its canonical name) give one snippet.
+            if key is not None and code not in seen:
+                seen.add(code)
                 snippets.append(
                     GuidanceSnippet(
                         f"document:{code}",
                         guideline.document_guidance[key].en,
-                        f"{SOURCE}#/document_guidance/{key}/en",
+                        _source("document_guidance", key, "en"),
                     )
                 )
         return tuple(snippets)
@@ -1971,12 +2002,12 @@ class GuidanceLibrary:
             return GuidanceSnippet(
                 "alternative:default",
                 self._guideline.document_alternative_guidance["default"].en,
-                f"{SOURCE}#/document_alternative_guidance/default/en",
+                _source("document_alternative_guidance", "default", "en"),
             )
         return GuidanceSnippet(
             f"alternative:{code}",
             self._guideline.document_alternative_guidance[key].en,
-            f"{SOURCE}#/document_alternative_guidance/{key}/en",
+            _source("document_alternative_guidance", key, "en"),
         )
 
     def human_review_rule(self) -> GuidanceSnippet:
@@ -1984,12 +2015,12 @@ class GuidanceLibrary:
         return GuidanceSnippet(
             "human_review",
             settings.human_review_after_document_alternatives_exhausted.en,
-            f"{SOURCE}#/claim_followup_settings/human_review_after_document_alternatives_exhausted/en",
+            _source("claim_followup_settings", "human_review_after_document_alternatives_exhausted", "en"),
         )
 
     def fallback(self) -> GuidanceSnippet:
         return GuidanceSnippet(
-            "fallback", self._guideline.claim_followup_fallback.en, f"{SOURCE}#/claim_followup_fallback/en"
+            "fallback", self._guideline.claim_followup_fallback.en, _source("claim_followup_fallback", "en")
         )
 
     def followup(self, claim: Claim, topic: str) -> GuidanceSnippet:
@@ -2005,7 +2036,7 @@ class GuidanceLibrary:
         return GuidanceSnippet(
             f"followup:{topic}",
             render_template(rule.en, values),
-            f"{SOURCE}#/claim_followup_guidance/{index}/en",
+            _source("claim_followup_guidance", index, "en"),
         )
 
     def _rule(self, topic: str) -> tuple[int, FollowupRule]:
@@ -2013,6 +2044,13 @@ class GuidanceLibrary:
             return self._rules[topic]
         except KeyError:
             raise UnknownTopic(topic) from None
+
+
+def _source(*path: str | int) -> str:
+    """The file plus an RFC 6901 JSON Pointer in URI-fragment form, so a key with a
+    space, "/", or "~" still points at exactly one entry."""
+    tokens = (quote(str(part).replace("~", "~0").replace("/", "~1"), safe="") for part in path)
+    return f"{SOURCE}#/" + "/".join(tokens)
 
 
 def _keys_by_code(entries: Mapping[str, object], catalog: DocumentCatalog) -> dict[str, str]:
@@ -2028,7 +2066,7 @@ def _keys_by_code(entries: Mapping[str, object], catalog: DocumentCatalog) -> di
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_guidance.py -v`
-Expected: PASS (12 tests)
+Expected: PASS (18 tests)
 
 - [ ] **Step 5: Commit**
 
