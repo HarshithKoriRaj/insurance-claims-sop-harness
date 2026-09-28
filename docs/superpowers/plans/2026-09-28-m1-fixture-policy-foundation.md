@@ -1355,6 +1355,7 @@ def test_validation_errors_do_not_echo_record_values(fixture_copy, catalog):
     assert "policyholders.json" in message and "id_last4" in message
     assert "44720" not in message
     assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
 
 
 def test_reference_errors_do_not_echo_names(fixture_copy, catalog):
@@ -1379,6 +1380,10 @@ def _add_unmapped_guidance_key(guideline):
     guideline["document_guidance"]["x-ray"] = {"en": "text"}
 
 
+def _add_unmapped_alternative_key(guideline):
+    guideline["document_alternative_guidance"]["x-ray"] = {"en": "text"}
+
+
 def _duplicate_party_id(holders):
     holders[1]["party_id"] = holders[0]["party_id"]
 
@@ -1387,10 +1392,19 @@ def _duplicate_party_id(holders):
     ("name", "change", "message"),
     [
         ("required_document_guideline.json", _drop_default_alternative, "has no default"),
-        ("required_document_guideline.json", _add_unmapped_guidance_key, "'x-ray' has no document code"),
+        (
+            "required_document_guideline.json",
+            _add_unmapped_guidance_key,
+            "document_guidance: document label 'x-ray' has no document code",
+        ),
+        (
+            "required_document_guideline.json",
+            _add_unmapped_alternative_key,
+            "document_alternative_guidance: document label 'x-ray' has no document code",
+        ),
         ("policyholders.json", _duplicate_party_id, "duplicate party_id: P9"),
     ],
-    ids=["missing-default-alternative", "unmapped-guidance-key", "duplicate-party-id"],
+    ids=["missing-default-alternative", "unmapped-guidance-key", "unmapped-alternative-key", "duplicate-party-id"],
 )
 def test_other_reference_errors_are_rejected(fixture_copy, catalog, name, change, message):
     fixture_copy.edit(name, change)
@@ -1422,6 +1436,7 @@ def test_unreadable_files_are_named_without_chaining(fixture_copy, catalog, cont
     with pytest.raises(FixtureError, match="representatives.json") as caught:
         load_fixtures(fixture_copy.path, catalog)
     assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -1503,7 +1518,8 @@ def load_fixtures(directory: Path, catalog: DocumentCatalog) -> FixtureStore:
             text = (directory / name).read_text(encoding="utf-8")
             raw[name] = json.loads(text, object_pairs_hook=_reject_repeated_keys)
         except (OSError, ValueError) as exc:
-            # from None: JSONDecodeError.doc and UnicodeDecodeError.object hold the whole file.
+            # from None keeps the original error out of rendered tracebacks; its .doc
+            # (JSONDecodeError) or .object (UnicodeDecodeError) holds the whole file.
             raise FixtureError(f"{name}: {exc}") from None
         try:
             parsed[name] = adapter.validate_python(raw[name])
@@ -1601,7 +1617,7 @@ def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_importer.py -v`
-Expected: PASS (23 tests)
+Expected: PASS (24 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1622,8 +1638,10 @@ git commit -m "feat: load fixtures read-only with cross-file checks"
 `tests/unit/test_money_and_deadlines.py`:
 
 ```python
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
+
+import pytest
 
 from app.claims.deadlines import appeal_deadline_status
 from app.claims.money import format_usd
@@ -1634,6 +1652,16 @@ def test_usd_formatting_keeps_cents_and_thousands():
     assert format_usd(Decimal("0.00")) == "$0.00"
     assert format_usd(Decimal("3200.5")) == "$3,200.50"
     assert format_usd(Decimal("1234567.89")) == "$1,234,567.89"
+
+
+@pytest.mark.parametrize(
+    "amount",
+    [Decimal("-5.00"), Decimal("-0.00"), Decimal("0.125"), Decimal("NaN"), Decimal("Infinity"), 1450.0, 1450],
+    ids=["negative", "negative-zero", "fraction-of-a-cent", "nan", "infinity", "float", "int"],
+)
+def test_usd_formatting_accepts_only_non_negative_whole_cent_decimals(amount):
+    with pytest.raises(ValueError):
+        format_usd(amount)
 
 
 def test_appeal_deadline_is_ahead_on_the_demo_date(store):
@@ -1653,6 +1681,11 @@ def test_appeal_deadline_has_passed_on_the_real_date(store):
 
 def test_claim_without_a_deadline_has_no_status(store):
     assert appeal_deadline_status(store.claim("CL-2011"), date(2026, 3, 1)) is None
+
+
+def test_a_timestamp_is_not_accepted_as_the_business_date(store):
+    with pytest.raises(TypeError, match="not timestamps"):
+        appeal_deadline_status(store.claim("CL-2048"), datetime(2026, 3, 1, tzinfo=timezone.utc))
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -1669,8 +1702,17 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.claims.deadlines'
 
 from decimal import Decimal
 
+_CENT = Decimal("0.01")
+
 
 def format_usd(amount: Decimal) -> str:
+    """Formats whole cents as "$1,450.00". Refuses floats, negative amounts, and
+    fractions of a cent instead of printing them, so the display always shows
+    exactly the recorded amount."""
+    if type(amount) is not Decimal or not amount.is_finite() or amount.is_signed():
+        raise ValueError("expected a finite, non-negative Decimal")
+    if amount.quantize(_CENT) != amount:
+        raise ValueError("expected whole cents")
     return f"${amount:,.2f}"
 ```
 
@@ -1693,6 +1735,12 @@ class DeadlineStatus:
     deadline: date
     business_date: date
 
+    def __post_init__(self) -> None:
+        # datetime is a date subclass. Rejecting it here makes a clock.now() timestamp
+        # fail at once rather than when days_remaining is first read.
+        if type(self.deadline) is not date or type(self.business_date) is not date:
+            raise TypeError("deadline and business_date must be dates, not timestamps")
+
     @property
     def days_remaining(self) -> int:
         return (self.deadline - self.business_date).days
@@ -1711,7 +1759,7 @@ def appeal_deadline_status(claim: Claim, business_date: date) -> DeadlineStatus 
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_money_and_deadlines.py -v`
-Expected: PASS (5 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Commit**
 
