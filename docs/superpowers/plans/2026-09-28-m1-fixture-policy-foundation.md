@@ -1,0 +1,2043 @@
+# Milestone 1: Fixture and Policy Foundation Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build the tested, offline foundation of the SOP harness: strict fixture contracts, a read-only fixture importer, document codes, approved-guidance rendering, money and deadline handling, versioned policy defaults, the clock, and identity-value normalization.
+
+**Architecture:** A Python package `app` under `services/api/`, following the layout in `docs/2026-09-28-sop-harness-plan.md`. Everything in this milestone is pure and deterministic: no model, database, or network. Policy values live in `policies/*.toml`. Fixtures are validated but never modified.
+
+**Tech Stack:** Python 3.13, uv, Pydantic 2, pytest, stdlib `tomllib` and `zoneinfo`.
+
+**Scope:** Milestone 1 of the architecture plan's delivery sequence. Its acceptance gate: all six fixtures validate; document aliases resolve; date and Decimal behavior tested; national ID cannot count as SSN; original fixtures unchanged. Verification decisions and receipts (Milestone 3), the workflow kernel (Milestone 2), tools, API, AI, email, and UI each get their own plan.
+
+---
+
+## File structure
+
+| Path | Responsibility |
+|---|---|
+| `pyproject.toml`, `uv.lock`, `.python-version`, `.gitignore` | Python project, pinned dependencies, ignored files |
+| `policies/defaults.toml` | Versioned demo defaults (limits, expiry, phone, demo business date) |
+| `policies/document_codes.toml` | Every fixture document label mapped to one document code |
+| `services/api/app/__init__.py` | Backend package marker |
+| `services/api/app/policies.py` | Loads and validates `policies/defaults.toml`; defines `IdentityField` |
+| `services/api/app/clock.py` | Real session time plus a demo-overridable business date |
+| `services/api/app/contracts/fixtures.py` | Strict Pydantic schemas for the six fixture files |
+| `services/api/app/claims/documents.py` | Document catalog: label → code |
+| `services/api/app/claims/importer.py` | Read-only fixture loading, cross-file reference checks, claim content versions |
+| `services/api/app/claims/money.py` | USD formatting from `Decimal` |
+| `services/api/app/claims/deadlines.py` | Appeal-deadline status against the business date |
+| `services/api/app/claims/guidance.py` | Approved guidance snippets with provenance; follow-up template rendering |
+| `services/api/app/identity/normalize.py` | Deterministic normalization of caller identity values |
+| `services/api/app/identity/fields.py` | Normalized values a policyholder record holds per permitted field |
+| `tests/conftest.py` | Shared paths and fixtures (`policy`, `catalog`, `store`, `fixture_copy`) |
+| `tests/unit/test_*.py` | One test module per unit above |
+
+Run every command from the repository root: `/Users/harshithkoriraj/Downloads/apps/insurance_claims`.
+
+---
+
+### Task 1: Repository and project scaffold
+
+**Files:**
+- Create: `.gitignore`, `.python-version`, `pyproject.toml`, `services/api/app/__init__.py`, `tests/conftest.py`, `tests/unit/test_scaffold.py`, `tests/unit/test_fixture_integrity.py`
+
+- [ ] **Step 1: Initialize git and commit the supplied material on `main`**
+
+Create `.gitignore`:
+
+```gitignore
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+build/
+.DS_Store
+```
+
+```bash
+git init -b main
+git add .gitignore fixtures docs
+git commit -m "chore: import supplied fixtures and design docs"
+git switch -c m1-foundation
+```
+
+Expected: a root commit on `main`, then `Switched to a new branch 'm1-foundation'`.
+
+- [ ] **Step 2: Create the Python project**
+
+`.python-version`:
+
+```text
+3.13
+```
+
+`pyproject.toml`:
+
+```toml
+[project]
+name = "insurance-claims-sop"
+version = "0.1.0"
+description = "SOP harness for an insurance claims support agent"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.9,<3",
+    "tzdata>=2024.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["services/api"]
+addopts = "-ra"
+```
+
+Run: `uv sync`
+Expected: creates `.venv/` and `uv.lock`; installs pydantic, tzdata, pytest.
+
+- [ ] **Step 3: Write the failing smoke test and shared test paths**
+
+`tests/conftest.py`:
+
+```python
+import json
+import shutil
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="session")
+def fixtures_dir() -> Path:
+    return ROOT / "fixtures"
+
+
+@pytest.fixture(scope="session")
+def policies_dir() -> Path:
+    return ROOT / "policies"
+
+
+@dataclass
+class FixtureCopy:
+    """A writable copy of the fixture directory, for tests that need bad data."""
+
+    path: Path
+
+    def edit(self, name: str, change: Callable[[Any], None]) -> None:
+        file = self.path / name
+        data = json.loads(file.read_text(encoding="utf-8"))
+        change(data)
+        file.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.fixture
+def fixture_copy(tmp_path: Path, fixtures_dir: Path) -> FixtureCopy:
+    target = tmp_path / "fixtures"
+    shutil.copytree(fixtures_dir, target)
+    return FixtureCopy(target)
+```
+
+`tests/unit/test_scaffold.py`:
+
+```python
+import app
+
+
+def test_backend_package_is_importable():
+    assert app.__doc__ == "Insurance claims SOP harness backend."
+```
+
+- [ ] **Step 4: Run it to verify it fails**
+
+Run: `uv run pytest tests/unit/test_scaffold.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app'`
+
+- [ ] **Step 5: Create the package**
+
+`services/api/app/__init__.py`:
+
+```python
+"""Insurance claims SOP harness backend."""
+```
+
+- [ ] **Step 6: Run it to verify it passes**
+
+Run: `uv run pytest tests/unit/test_scaffold.py -v`
+Expected: PASS
+
+- [ ] **Step 7: Add the fixture-integrity guard**
+
+`tests/unit/test_fixture_integrity.py`:
+
+```python
+"""The supplied fixtures are read-only inputs. These are the SHA-256 hashes of the
+files as delivered; a mismatch means a fixture was edited instead of the policy overlay."""
+
+import hashlib
+
+DELIVERED_SHA256 = {
+    "claim_schema.json": "f95f0b49b4522e56b4b65dbdf4d74204b348bf43a333920a07d8d6589969ec4a",
+    "claims.json": "16466e43f33eb7fb4f8aa0a3120f5e636ff38e337fc2673ee5aacdd9deaad76f",
+    "consent_scenarios.json": "e1c49b14f21d7f956042f0737a4f5b9c2b09f63e5b4abfbe203df089cd678304",
+    "policyholders.json": "7eb92602a256cabe628ddbe31d739609ebf00d9672e327f73ff31ae9bee1189c",
+    "representatives.json": "ebc55c04c068a762e3596048fef0ebfeef21b19f595b64e0bdd64cc2c26c8b34",
+    "required_document_guideline.json": "bc5425b0970c6e4c4c64b262f1c3c0020287e3e9adc437034c2f96fa6ff36c4b",
+}
+
+
+def test_fixture_files_are_unchanged(fixtures_dir):
+    actual = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(fixtures_dir.glob("*.json"))
+    }
+    assert actual == DELIVERED_SHA256
+```
+
+Run: `uv run pytest tests/unit/test_fixture_integrity.py -v`
+Expected: PASS. This test guards the delivered files; it has no implementation step.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add .python-version pyproject.toml uv.lock services tests
+git commit -m "chore: scaffold Python project and guard the supplied fixtures"
+```
+
+---
+
+### Task 2: Policy defaults
+
+**Files:**
+- Create: `policies/defaults.toml`, `services/api/app/policies.py`, `tests/unit/test_policies.py`
+- Modify: `tests/conftest.py` (append the `policy` fixture)
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/unit/test_policies.py`:
+
+```python
+from datetime import date
+
+import pytest
+from pydantic import ValidationError
+
+from app.policies import load_policy
+
+
+def test_defaults_match_the_architecture_plan(policies_dir):
+    policy = load_policy(policies_dir / "defaults.toml")
+    assert policy.verification.required_matching_fields == 3
+    assert policy.verification.max_failed_submissions == 3
+    assert policy.verification.idle_expiry_minutes == 30
+    assert policy.verification.permitted_fields == ("full_name", "dob", "phone", "email", "ssn_last4")
+    assert policy.session.max_age_hours == 8
+    assert policy.session.max_input_characters == 8000
+    assert policy.recovery.unrelated_offer_human_at == 2
+    assert policy.recovery.unrelated_stop_at == 3
+    assert policy.recovery.refusals_before_stop == 2
+    assert policy.claims.fact_max_age_minutes == 5
+    assert policy.demo.business_date == date(2026, 3, 1)
+
+
+def test_unknown_keys_are_rejected(policies_dir, tmp_path):
+    path = tmp_path / "defaults.toml"
+    path.write_text((policies_dir / "defaults.toml").read_text() + "\n[surprise]\nkey = 1\n")
+    with pytest.raises(ValidationError):
+        load_policy(path)
+
+
+def test_national_id_cannot_be_added_as_a_permitted_field(policies_dir, tmp_path):
+    path = tmp_path / "defaults.toml"
+    text = (policies_dir / "defaults.toml").read_text()
+    path.write_text(text.replace('"ssn_last4"]', '"ssn_last4", "national_id_last4"]'))
+    with pytest.raises(ValidationError):
+        load_policy(path)
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_policies.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.policies'`
+
+- [ ] **Step 3: Write the policy file and loader**
+
+`policies/defaults.toml`:
+
+```toml
+# Proposed, configurable demo defaults from docs/2026-09-28-sop-harness-plan.md.
+# These are not insurer policy; production values need insurer approval.
+version = "2026-09-28"
+
+[verification]
+required_matching_fields = 3
+max_failed_submissions = 3
+idle_expiry_minutes = 30
+permitted_fields = ["full_name", "dob", "phone", "email", "ssn_last4"]
+
+[session]
+max_age_hours = 8
+max_input_characters = 8000
+recent_turns = 12
+max_turns = 60
+
+[recovery]
+# Consecutive unrelated requests: the 2nd offers a human, the 3rd stops answering them.
+unrelated_offer_human_at = 2
+unrelated_stop_at = 3
+# Explicit refusals to continue verification before persuasion stops.
+refusals_before_stop = 2
+
+[claims]
+fact_max_age_minutes = 5
+
+[phone]
+# Applied only to national-length numbers given without a country code.
+default_country_calling_code = "1"
+national_number_length = 10
+
+[demo]
+business_date = 2026-03-01
+business_timezone = "America/Los_Angeles"
+```
+
+`services/api/app/policies.py`:
+
+```python
+"""Loads the explicit, versioned defaults in policies/defaults.toml."""
+
+from __future__ import annotations
+
+import tomllib
+from datetime import date
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+IdentityField = Literal["full_name", "dob", "phone", "email", "ssn_last4"]
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class VerificationPolicy(_Strict):
+    required_matching_fields: int = Field(ge=1)
+    max_failed_submissions: int = Field(ge=1)
+    idle_expiry_minutes: int = Field(ge=1)
+    permitted_fields: tuple[IdentityField, ...]
+
+
+class SessionPolicy(_Strict):
+    max_age_hours: int = Field(ge=1)
+    max_input_characters: int = Field(ge=1)
+    recent_turns: int = Field(ge=1)
+    max_turns: int = Field(ge=1)
+
+
+class RecoveryPolicy(_Strict):
+    unrelated_offer_human_at: int = Field(ge=1)
+    unrelated_stop_at: int = Field(ge=1)
+    refusals_before_stop: int = Field(ge=1)
+
+
+class ClaimsPolicy(_Strict):
+    fact_max_age_minutes: int = Field(ge=1)
+
+
+class PhonePolicy(_Strict):
+    default_country_calling_code: str = Field(pattern=r"^[1-9]\d{0,2}$")
+    national_number_length: int = Field(ge=4, le=14)
+
+
+class DemoPolicy(_Strict):
+    business_date: date
+    business_timezone: str
+
+
+class Policy(_Strict):
+    version: str
+    verification: VerificationPolicy
+    session: SessionPolicy
+    recovery: RecoveryPolicy
+    claims: ClaimsPolicy
+    phone: PhonePolicy
+    demo: DemoPolicy
+
+
+def load_policy(path: Path) -> Policy:
+    with path.open("rb") as handle:
+        return Policy.model_validate(tomllib.load(handle))
+```
+
+Append to `tests/conftest.py`:
+
+```python
+@pytest.fixture(scope="session")
+def policy(policies_dir):
+    from app.policies import load_policy
+
+    return load_policy(policies_dir / "defaults.toml")
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_policies.py -v`
+Expected: PASS (3 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add policies/defaults.toml services/api/app/policies.py tests
+git commit -m "feat: load versioned policy defaults"
+```
+
+---
+
+### Task 3: Clock
+
+**Files:**
+- Create: `services/api/app/clock.py`, `tests/unit/test_clock.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/unit/test_clock.py`:
+
+```python
+from datetime import date
+
+import pytest
+
+from app.clock import ClockConfigError, DemoClock, SystemClock, build_clock
+
+
+def test_demo_mode_pins_the_business_date(policy):
+    clock = build_clock("demo", policy)
+    assert isinstance(clock, DemoClock)
+    assert clock.business_date() == date(2026, 3, 1)
+
+
+def test_demo_mode_accepts_a_business_date_override(policy):
+    assert build_clock("demo", policy, "2026-09-28").business_date() == date(2026, 9, 28)
+
+
+def test_demo_mode_can_use_the_real_calendar(policy):
+    assert isinstance(build_clock("demo", policy, "today"), SystemClock)
+
+
+def test_production_mode_rejects_a_business_date_override(policy):
+    with pytest.raises(ClockConfigError):
+        build_clock("production", policy, "2026-03-01")
+
+
+def test_production_mode_uses_the_system_clock(policy):
+    assert isinstance(build_clock("production", policy), SystemClock)
+
+
+def test_unknown_mode_is_rejected(policy):
+    with pytest.raises(ClockConfigError):
+        build_clock("staging", policy)
+
+
+def test_session_time_is_real_and_timezone_aware(policy):
+    assert build_clock("demo", policy).now().tzinfo is not None
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_clock.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.clock'`
+
+- [ ] **Step 3: Implement the clock**
+
+`services/api/app/clock.py`:
+
+```python
+"""Time sources. Session expiry always uses real time; the demo overrides only the
+business date used for claim deadlines."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from typing import Protocol
+from zoneinfo import ZoneInfo
+
+from app.policies import Policy
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+    def business_date(self) -> date: ...
+
+
+@dataclass(frozen=True)
+class SystemClock:
+    timezone: ZoneInfo
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+    def business_date(self) -> date:
+        return self.now().astimezone(self.timezone).date()
+
+
+@dataclass(frozen=True)
+class DemoClock:
+    fixed_business_date: date
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+    def business_date(self) -> date:
+        return self.fixed_business_date
+
+
+class ClockConfigError(RuntimeError):
+    pass
+
+
+def build_clock(app_mode: str, policy: Policy, business_date_override: str | None = None) -> Clock:
+    timezone = ZoneInfo(policy.demo.business_timezone)
+    if app_mode == "production":
+        if business_date_override is not None:
+            raise ClockConfigError("a business-date override is not allowed in production mode")
+        return SystemClock(timezone)
+    if app_mode == "demo":
+        if business_date_override == "today":
+            return SystemClock(timezone)
+        if business_date_override is not None:
+            return DemoClock(date.fromisoformat(business_date_override))
+        return DemoClock(policy.demo.business_date)
+    raise ClockConfigError(f"unknown APP_MODE {app_mode!r}; expected 'demo' or 'production'")
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_clock.py -v`
+Expected: PASS (7 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/api/app/clock.py tests/unit/test_clock.py
+git commit -m "feat: add clock with demo business-date override"
+```
+
+---
+
+### Task 4: Fixture contracts
+
+**Files:**
+- Create: `services/api/app/contracts/__init__.py`, `services/api/app/contracts/fixtures.py`, `tests/unit/test_fixture_contracts.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/unit/test_fixture_contracts.py`:
+
+```python
+import json
+from datetime import date
+from decimal import Decimal
+
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
+from app.contracts.fixtures import (
+    Claim,
+    ClaimSchemaDoc,
+    ConsentScenario,
+    DocumentGuideline,
+    Policyholder,
+    Representative,
+)
+
+VALID_CLAIM = {
+    "case_id": "CL-1",
+    "party_id": "P1",
+    "case_type": "healthcare",
+    "created_at": "2026-01-01",
+    "status": "open",
+    "summary": "test",
+    "expected_reimbursement_amount": "1.00",
+    "allowed_max_amount": "1.00",
+    "net_pay": "0.00",
+    "net_fee": "1.00",
+}
+
+VALID_HOLDER = {
+    "party_id": "P1",
+    "name": "Test Person",
+    "policy_number": "POL-1",
+    "dob": "1990-01-01",
+    "id_type": "ssn_last4",
+    "id_last4": "0042",
+    "phone": "+16500000000",
+    "email": "test@example.com",
+}
+
+
+def _read(fixtures_dir, name):
+    return json.loads((fixtures_dir / name).read_text(encoding="utf-8"))
+
+
+def test_policyholders_validate(fixtures_dir):
+    holders = TypeAdapter(tuple[Policyholder, ...]).validate_python(_read(fixtures_dir, "policyholders.json"))
+    assert [h.party_id for h in holders] == ["P9", "P7", "P12", "P13"]
+    assert holders[0].dob == date(1985, 3, 15)
+    assert (holders[0].id_type, holders[0].id_last4) == ("ssn_last4", "4472")
+    assert holders[2].id_type == "national_id_last4"
+    assert holders[3].name_aliases == ("Yaven Li",)
+
+
+def test_claims_validate_with_decimal_money_and_real_dates(fixtures_dir):
+    claims = TypeAdapter(tuple[Claim, ...]).validate_python(_read(fixtures_dir, "claims.json"))
+    denied = next(c for c in claims if c.case_id == "CL-2048")
+    assert denied.allowed_max_amount == Decimal("1450.00")
+    assert isinstance(denied.net_pay, Decimal)
+    assert denied.appeal_deadline == date(2026, 3, 18)
+    assert denied.documents_needed == ("pathology report", "office note")
+
+
+def test_remaining_fixture_files_validate(fixtures_dir):
+    ClaimSchemaDoc.model_validate(_read(fixtures_dir, "claim_schema.json"))
+    TypeAdapter(dict[str, ConsentScenario]).validate_python(_read(fixtures_dir, "consent_scenarios.json"))
+    TypeAdapter(tuple[Representative, ...]).validate_python(_read(fixtures_dir, "representatives.json"))
+    DocumentGuideline.model_validate(_read(fixtures_dir, "required_document_guideline.json"))
+
+
+@pytest.mark.parametrize("bad", [1450.0, "1450", "1,450.00", "abc", "-1.00"])
+def test_money_must_be_a_two_place_decimal_string(bad):
+    with pytest.raises(ValidationError):
+        Claim.model_validate({**VALID_CLAIM, "net_pay": bad})
+
+
+def test_unknown_keys_are_rejected():
+    with pytest.raises(ValidationError):
+        Claim.model_validate({**VALID_CLAIM, "surprise": True})
+
+
+def test_id_last4_keeps_leading_zeros():
+    assert Policyholder.model_validate(VALID_HOLDER).id_last4 == "0042"
+
+
+def test_id_last4_must_be_a_four_digit_string():
+    with pytest.raises(ValidationError):
+        Policyholder.model_validate({**VALID_HOLDER, "id_last4": 42})
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_fixture_contracts.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.contracts'`
+
+- [ ] **Step 3: Implement the contracts**
+
+`services/api/app/contracts/__init__.py`:
+
+```python
+"""Typed contracts shared across the backend."""
+```
+
+`services/api/app/contracts/fixtures.py`:
+
+```python
+"""Strict schemas for the six supplied fixture files. Unknown keys are rejected, so
+a changed fixture fails loudly instead of being partly read."""
+
+from __future__ import annotations
+
+import re
+from datetime import date
+from decimal import Decimal
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+
+_MONEY = re.compile(r"^\d+\.\d{2}$")
+
+
+def _money(value: object) -> Decimal:
+    if not isinstance(value, str) or not _MONEY.fullmatch(value):
+        raise ValueError("money must be a decimal string with two places, such as '1450.00'")
+    return Decimal(value)
+
+
+Money = Annotated[Decimal, BeforeValidator(_money)]
+E164 = Annotated[str, StringConstraints(pattern=r"^\+[1-9]\d{7,14}$")]
+Last4 = Annotated[str, StringConstraints(pattern=r"^\d{4}$")]
+CaseType = Literal["healthcare", "dental", "auto"]
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class Policyholder(_Strict):
+    party_id: str
+    name: str
+    name_aliases: tuple[str, ...] = ()
+    policy_number: str
+    dob: date
+    id_type: Literal["ssn_last4", "national_id_last4"]
+    id_last4: Last4
+    phone: E164
+    phone_aliases: tuple[E164, ...] = ()
+    email: str
+    email_aliases: tuple[str, ...] = ()
+
+
+class Claim(_Strict):
+    case_id: str
+    party_id: str
+    case_type: CaseType
+    created_at: date
+    status: Literal["denied", "closed", "open"]
+    summary: str
+    denial_reason: str | None = None
+    documents_needed: tuple[str, ...] = ()
+    appeal_deadline: date | None = None
+    expected_reimbursement_amount: Money
+    allowed_max_amount: Money
+    net_pay: Money
+    net_fee: Money
+
+
+class FieldDescription(_Strict):
+    type: str
+    example: str
+    description: str
+
+
+class ClaimSchemaDoc(_Strict):
+    notes: tuple[str, ...]
+    field_descriptions: dict[str, FieldDescription]
+
+
+class ConsentScenario(_Strict):
+    status_sequence: tuple[Literal["pending", "approved", "denied", "revoked"], ...] = Field(min_length=1)
+
+
+class Representative(_Strict):
+    rep_name: str
+    relationship: str
+    buyer_name: str
+    buyer_party_id: str
+
+
+class LocalizedText(_Strict):
+    en: str
+
+
+class FollowupRule(_Strict):
+    topic: str
+    intent_hints: tuple[str, ...]
+    requires_documents: bool
+    match_any: tuple[str, ...] = ()
+    en: str
+
+
+class FollowupSettings(_Strict):
+    average_processing_time_after_submission: LocalizedText
+    human_review_after_document_alternatives_exhausted: LocalizedText
+
+
+class DocumentGuideline(_Strict):
+    default_guidance: LocalizedText
+    case_type_guidance: dict[CaseType, LocalizedText]
+    document_guidance: dict[str, LocalizedText]
+    document_alternative_guidance: dict[str, LocalizedText]
+    claim_followup_settings: FollowupSettings
+    claim_followup_guidance: tuple[FollowupRule, ...]
+    claim_followup_fallback: LocalizedText
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_fixture_contracts.py -v`
+Expected: PASS (11 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/api/app/contracts tests/unit/test_fixture_contracts.py
+git commit -m "feat: add strict schemas for the supplied fixtures"
+```
+
+---
+
+### Task 5: Document catalog
+
+**Files:**
+- Create: `policies/document_codes.toml`, `services/api/app/claims/__init__.py`, `services/api/app/claims/documents.py`, `tests/unit/test_documents.py`
+- Modify: `tests/conftest.py` (append the `catalog` fixture)
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/conftest.py`:
+
+```python
+@pytest.fixture(scope="session")
+def catalog(policies_dir):
+    from app.claims.documents import load_document_catalog
+
+    return load_document_catalog(policies_dir / "document_codes.toml")
+```
+
+`tests/unit/test_documents.py`:
+
+```python
+import pytest
+
+from app.claims.documents import UnknownDocumentLabel, load_document_catalog
+
+
+def test_claim_and_guidance_labels_share_one_code(catalog):
+    assert catalog.code_for("pathology report") == "PATHOLOGY_REPORT"
+    assert catalog.code_for("original pathology report") == "PATHOLOGY_REPORT"
+    assert catalog.code_for("office note") == "PROVIDER_OFFICE_NOTE"
+    assert catalog.code_for("treating provider office note") == "PROVIDER_OFFICE_NOTE"
+    assert catalog.code_for("diagnosis report") == "DIAGNOSIS_REPORT"
+
+
+def test_labels_ignore_case_and_extra_spaces(catalog):
+    assert catalog.code_for("  Pathology   REPORT ") == "PATHOLOGY_REPORT"
+
+
+def test_unknown_label_fails_closed(catalog):
+    with pytest.raises(UnknownDocumentLabel):
+        catalog.code_for("x-ray")
+
+
+def test_a_label_cannot_map_to_two_codes(tmp_path):
+    path = tmp_path / "codes.toml"
+    path.write_text('version = "t"\n[codes.A]\nlabels = ["note"]\n[codes.B]\nlabels = ["Note"]\n')
+    with pytest.raises(ValueError, match="maps to both"):
+        load_document_catalog(path)
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_documents.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.claims'`
+
+- [ ] **Step 3: Write the catalog and loader**
+
+`policies/document_codes.toml`:
+
+```toml
+# Every document label used in the fixtures, from claims and from guidance keys,
+# mapped to one document code. Callers always see the claim's own label, so a
+# guidance key's "original" never becomes a stated requirement.
+version = "2026-09-28"
+
+[codes.PATHOLOGY_REPORT]
+labels = ["pathology report", "original pathology report"]
+
+[codes.PROVIDER_OFFICE_NOTE]
+labels = ["office note", "treating provider office note"]
+
+[codes.DIAGNOSIS_REPORT]
+labels = ["diagnosis report"]
+
+[codes.REPAIR_ESTIMATE]
+labels = ["repair estimate"]
+
+[codes.ACCIDENT_SCENE_PHOTOS]
+labels = ["supplemental accident scene photos"]
+```
+
+`services/api/app/claims/__init__.py`:
+
+```python
+"""Claim data, document codes, and approved guidance."""
+```
+
+`services/api/app/claims/documents.py`:
+
+```python
+"""Maps document labels from claims and guidance onto shared document codes."""
+
+from __future__ import annotations
+
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+
+class UnknownDocumentLabel(KeyError):
+    pass
+
+
+def normalize_label(label: str) -> str:
+    return " ".join(label.casefold().split())
+
+
+@dataclass(frozen=True)
+class DocumentCatalog:
+    version: str
+    label_to_code: Mapping[str, str]
+
+    def code_for(self, label: str) -> str:
+        try:
+            return self.label_to_code[normalize_label(label)]
+        except KeyError:
+            raise UnknownDocumentLabel(label) from None
+
+
+def load_document_catalog(path: Path) -> DocumentCatalog:
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    label_to_code: dict[str, str] = {}
+    for code, entry in data["codes"].items():
+        for label in entry["labels"]:
+            key = normalize_label(label)
+            if key in label_to_code:
+                raise ValueError(f"document label {label!r} maps to both {label_to_code[key]} and {code}")
+            label_to_code[key] = code
+    return DocumentCatalog(version=data["version"], label_to_code=label_to_code)
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_documents.py -v`
+Expected: PASS (4 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add policies/document_codes.toml services/api/app/claims tests
+git commit -m "feat: map fixture document labels to shared codes"
+```
+
+---
+
+### Task 6: Fixture importer
+
+**Files:**
+- Create: `services/api/app/claims/importer.py`, `tests/unit/test_importer.py`
+- Modify: `tests/conftest.py` (append the `store` fixture)
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/conftest.py`:
+
+```python
+@pytest.fixture(scope="session")
+def store(fixtures_dir, catalog):
+    from app.claims.importer import load_fixtures
+
+    return load_fixtures(fixtures_dir, catalog)
+```
+
+`tests/unit/test_importer.py`:
+
+```python
+import hashlib
+
+import pytest
+
+from app.claims.importer import FixtureError, load_fixtures
+
+
+def _hashes(directory):
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in directory.glob("*.json")}
+
+
+def test_store_holds_every_fixture_record(store):
+    assert len(store.policyholders) == 4
+    assert len(store.claims) == 5
+    assert len(store.representatives) == 1
+    assert set(store.consent_scenarios) == {"default", "timeout"}
+
+
+def test_claims_are_indexed_by_owner(store):
+    assert [c.case_id for c in store.claims_for_party("P9")] == ["CL-2048", "CL-2011", "CL-1899", "CL-2102"]
+    assert [c.case_id for c in store.claims_for_party("P12")] == ["CL-3001"]
+    assert store.claims_for_party("P7") == ()
+    assert store.claims_for_party("P13") == ()
+
+
+def test_lookups_return_none_for_unknown_ids(store):
+    assert store.claim("CL-9999") is None
+    assert store.policyholder("P99") is None
+
+
+def test_claim_versions_are_stable_content_hashes(store, fixtures_dir, catalog):
+    assert load_fixtures(fixtures_dir, catalog).claim_versions == store.claim_versions
+    assert len(set(store.claim_versions.values())) == 5
+
+
+def test_a_changed_claim_gets_a_new_version(store, fixture_copy, catalog):
+    fixture_copy.edit("claims.json", lambda claims: claims[0].update(status="open"))
+    changed = load_fixtures(fixture_copy.path, catalog).claim_versions
+    assert changed["CL-2048"] != store.claim_versions["CL-2048"]
+    assert changed["CL-2011"] == store.claim_versions["CL-2011"]
+
+
+def test_loading_leaves_fixture_files_untouched(fixtures_dir, catalog):
+    before = _hashes(fixtures_dir)
+    load_fixtures(fixtures_dir, catalog)
+    assert _hashes(fixtures_dir) == before
+
+
+def test_claim_owned_by_an_unknown_party_is_rejected(fixture_copy, catalog):
+    fixture_copy.edit("claims.json", lambda claims: claims[0].update(party_id="P99"))
+    with pytest.raises(FixtureError, match="unknown party P99"):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+def test_representative_must_name_their_policyholder(fixture_copy, catalog):
+    fixture_copy.edit("representatives.json", lambda reps: reps[0].update(buyer_name="Someone Else"))
+    with pytest.raises(FixtureError, match="does not match a policyholder"):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+def test_document_label_without_a_code_is_rejected(fixture_copy, catalog):
+    fixture_copy.edit("claims.json", lambda claims: claims[0].update(documents_needed=["x-ray"]))
+    with pytest.raises(FixtureError, match="'x-ray' has no document code"):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+def test_invalid_file_is_named_in_the_error(fixture_copy, catalog):
+    fixture_copy.edit(
+        "consent_scenarios.json", lambda scenarios: scenarios.update(surprise={"status_sequence": ["maybe"]})
+    )
+    with pytest.raises(FixtureError, match="consent_scenarios.json"):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+def test_duplicate_case_ids_are_rejected(fixture_copy, catalog):
+    fixture_copy.edit("claims.json", lambda claims: claims.append(dict(claims[0])))
+    with pytest.raises(FixtureError, match="duplicate case_id: CL-2048"):
+        load_fixtures(fixture_copy.path, catalog)
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_importer.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.claims.importer'`
+
+- [ ] **Step 3: Implement the importer**
+
+`services/api/app/claims/importer.py`:
+
+```python
+"""Loads the supplied fixtures read-only, validates each file, and checks the
+references between files. Nothing here writes to the fixture directory."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from pydantic import TypeAdapter, ValidationError
+
+from app.claims.documents import DocumentCatalog, UnknownDocumentLabel
+from app.contracts.fixtures import (
+    Claim,
+    ClaimSchemaDoc,
+    ConsentScenario,
+    DocumentGuideline,
+    Policyholder,
+    Representative,
+)
+
+
+class FixtureError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class FixtureStore:
+    policyholders: tuple[Policyholder, ...]
+    claims: tuple[Claim, ...]
+    claim_schema: ClaimSchemaDoc
+    consent_scenarios: Mapping[str, ConsentScenario]
+    representatives: tuple[Representative, ...]
+    guideline: DocumentGuideline
+    claim_versions: Mapping[str, str]
+
+    def policyholder(self, party_id: str) -> Policyholder | None:
+        return next((p for p in self.policyholders if p.party_id == party_id), None)
+
+    def claim(self, case_id: str) -> Claim | None:
+        return next((c for c in self.claims if c.case_id == case_id), None)
+
+    def claims_for_party(self, party_id: str) -> tuple[Claim, ...]:
+        return tuple(c for c in self.claims if c.party_id == party_id)
+
+
+_FILES: dict[str, TypeAdapter[Any]] = {
+    "policyholders.json": TypeAdapter(tuple[Policyholder, ...]),
+    "claims.json": TypeAdapter(tuple[Claim, ...]),
+    "claim_schema.json": TypeAdapter(ClaimSchemaDoc),
+    "consent_scenarios.json": TypeAdapter(dict[str, ConsentScenario]),
+    "representatives.json": TypeAdapter(tuple[Representative, ...]),
+    "required_document_guideline.json": TypeAdapter(DocumentGuideline),
+}
+
+
+def load_fixtures(directory: Path, catalog: DocumentCatalog) -> FixtureStore:
+    raw: dict[str, Any] = {}
+    parsed: dict[str, Any] = {}
+    for name, adapter in _FILES.items():
+        try:
+            raw[name] = json.loads((directory / name).read_text(encoding="utf-8"))
+            parsed[name] = adapter.validate_python(raw[name])
+        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            raise FixtureError(f"{name}: {exc}") from exc
+
+    store = FixtureStore(
+        policyholders=parsed["policyholders.json"],
+        claims=parsed["claims.json"],
+        claim_schema=parsed["claim_schema.json"],
+        consent_scenarios=parsed["consent_scenarios.json"],
+        representatives=parsed["representatives.json"],
+        guideline=parsed["required_document_guideline.json"],
+        claim_versions={record["case_id"]: _content_hash(record) for record in raw["claims.json"]},
+    )
+    _check_references(store, catalog)
+    return store
+
+
+def _content_hash(record: Any) -> str:
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _check_references(store: FixtureStore, catalog: DocumentCatalog) -> None:
+    party_ids = [p.party_id for p in store.policyholders]
+    _require_unique("party_id", party_ids)
+    _require_unique("policy_number", [p.policy_number for p in store.policyholders])
+    _require_unique("case_id", [c.case_id for c in store.claims])
+
+    for claim in store.claims:
+        if claim.party_id not in party_ids:
+            raise FixtureError(f"claims.json: {claim.case_id} belongs to unknown party {claim.party_id}")
+        for label in claim.documents_needed:
+            _require_code(catalog, label, f"claims.json: {claim.case_id}")
+
+    for rep in store.representatives:
+        holder = store.policyholder(rep.buyer_party_id)
+        if holder is None or holder.name != rep.buyer_name:
+            raise FixtureError(
+                f"representatives.json: {rep.rep_name} names {rep.buyer_name} ({rep.buyer_party_id}), "
+                "which does not match a policyholder"
+            )
+
+    guideline = store.guideline
+    for key in guideline.document_guidance:
+        _require_code(catalog, key, "required_document_guideline.json: document_guidance")
+    for key in guideline.document_alternative_guidance:
+        if key != "default":
+            _require_code(catalog, key, "required_document_guideline.json: document_alternative_guidance")
+    if "default" not in guideline.document_alternative_guidance:
+        raise FixtureError("required_document_guideline.json: document_alternative_guidance has no default")
+
+
+def _require_unique(field: str, values: list[str]) -> None:
+    duplicates = sorted({v for v in values if values.count(v) > 1})
+    if duplicates:
+        raise FixtureError(f"duplicate {field}: {', '.join(duplicates)}")
+
+
+def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
+    try:
+        catalog.code_for(label)
+    except UnknownDocumentLabel:
+        raise FixtureError(f"{where}: document label {label!r} has no document code") from None
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_importer.py -v`
+Expected: PASS (11 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/api/app/claims/importer.py tests
+git commit -m "feat: load fixtures read-only with cross-file checks"
+```
+
+---
+
+### Task 7: Money and appeal deadlines
+
+**Files:**
+- Create: `services/api/app/claims/money.py`, `services/api/app/claims/deadlines.py`, `tests/unit/test_money_and_deadlines.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/unit/test_money_and_deadlines.py`:
+
+```python
+from datetime import date
+from decimal import Decimal
+
+from app.claims.deadlines import appeal_deadline_status
+from app.claims.money import format_usd
+
+
+def test_usd_formatting_keeps_cents_and_thousands():
+    assert format_usd(Decimal("1450.00")) == "$1,450.00"
+    assert format_usd(Decimal("0.00")) == "$0.00"
+    assert format_usd(Decimal("3200.5")) == "$3,200.50"
+
+
+def test_appeal_deadline_is_ahead_on_the_demo_date(store):
+    status = appeal_deadline_status(store.claim("CL-2048"), date(2026, 3, 1))
+    assert (status.days_remaining, status.passed) == (17, False)
+
+
+def test_deadline_day_itself_is_still_open(store):
+    status = appeal_deadline_status(store.claim("CL-2048"), date(2026, 3, 18))
+    assert (status.days_remaining, status.passed) == (0, False)
+
+
+def test_appeal_deadline_has_passed_on_the_real_date(store):
+    status = appeal_deadline_status(store.claim("CL-2048"), date(2026, 9, 28))
+    assert (status.days_remaining, status.passed) == (-194, True)
+
+
+def test_claim_without_a_deadline_has_no_status(store):
+    assert appeal_deadline_status(store.claim("CL-2011"), date(2026, 3, 1)) is None
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_money_and_deadlines.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.claims.deadlines'`
+
+- [ ] **Step 3: Implement money formatting and deadline status**
+
+`services/api/app/claims/money.py`:
+
+```python
+"""Money formatting. Amounts stay Decimal from fixture to display; no floats."""
+
+from decimal import Decimal
+
+
+def format_usd(amount: Decimal) -> str:
+    return f"${amount:,.2f}"
+```
+
+`services/api/app/claims/deadlines.py`:
+
+```python
+"""Appeal-deadline status relative to the business date. Date arithmetic lives in
+code, never in a model."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+
+from app.contracts.fixtures import Claim
+
+
+@dataclass(frozen=True)
+class DeadlineStatus:
+    deadline: date
+    business_date: date
+
+    @property
+    def days_remaining(self) -> int:
+        return (self.deadline - self.business_date).days
+
+    @property
+    def passed(self) -> bool:
+        return self.days_remaining < 0
+
+
+def appeal_deadline_status(claim: Claim, business_date: date) -> DeadlineStatus | None:
+    if claim.appeal_deadline is None:
+        return None
+    return DeadlineStatus(deadline=claim.appeal_deadline, business_date=business_date)
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_money_and_deadlines.py -v`
+Expected: PASS (5 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/api/app/claims/money.py services/api/app/claims/deadlines.py tests/unit/test_money_and_deadlines.py
+git commit -m "feat: format USD and compute appeal-deadline status"
+```
+
+---
+
+### Task 8: Guidance library
+
+**Files:**
+- Create: `services/api/app/claims/guidance.py`, `tests/unit/test_guidance.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/unit/test_guidance.py`:
+
+```python
+import pytest
+
+from app.claims.guidance import (
+    GuidanceLibrary,
+    GuidanceRenderError,
+    UnknownTopic,
+    natural_list,
+    render_template,
+)
+
+
+@pytest.fixture(scope="module")
+def library(store, catalog):
+    return GuidanceLibrary(store.guideline, catalog)
+
+
+def test_denied_claim_gets_general_case_type_and_document_guidance(library, store):
+    claim = store.claim("CL-2048")
+    topics = [s.topic for s in library.for_documents(claim.case_type, claim.documents_needed)]
+    assert topics == ["default", "case_type:healthcare", "document:PATHOLOGY_REPORT", "document:PROVIDER_OFFICE_NOTE"]
+
+
+def test_diagnosis_report_has_no_specific_guidance(library, store):
+    claim = store.claim("CL-3001")
+    topics = [s.topic for s in library.for_documents(claim.case_type, claim.documents_needed)]
+    assert topics == ["default", "case_type:healthcare"]
+
+
+def test_alternatives_are_document_specific_or_default(library):
+    assert library.alternatives("pathology report").topic == "alternative:PATHOLOGY_REPORT"
+    assert library.alternatives("office note").topic == "alternative:PROVIDER_OFFICE_NOTE"
+    assert library.alternatives("diagnosis report").topic == "alternative:default"
+
+
+def test_submission_timing_is_filled_from_the_claim(library, store):
+    snippet = library.followup(store.claim("CL-2048"), "submission_timing")
+    assert snippet.text == "For claim CL-2048, please submit pathology report and office note within a week."
+    assert snippet.source.endswith("#/claim_followup_guidance/1/en")
+
+
+def test_every_topic_renders_completely_for_a_claim_with_documents(library, store):
+    claim = store.claim("CL-2048")
+    for topic in library.topics:
+        text = library.followup(claim, topic).text
+        assert "{" not in text and "}" not in text
+        assert "original" not in text
+
+
+def test_processing_time_comes_from_the_settings(library, store):
+    text = library.followup(store.claim("CL-2048"), "processing_time_after_submission").text
+    assert "The average processing time is usually less than a week" in text
+
+
+def test_templates_do_not_apply_to_a_claim_without_documents(library, store):
+    assert library.followup(store.claim("CL-2102"), "submission_method") == library.fallback()
+
+
+def test_unknown_topic_is_rejected(library, store):
+    with pytest.raises(UnknownTopic):
+        library.followup(store.claim("CL-2048"), "refund_status")
+
+
+def test_match_any_phrases_are_exposed_only_as_examples(library):
+    assert "how long" in library.topic_examples("processing_time_after_submission")
+    assert library.topic_examples("missing_required_material_alternatives") == ()
+
+
+def test_rendering_refuses_an_empty_placeholder():
+    with pytest.raises(GuidanceRenderError):
+        render_template("Submit {documents} soon.", {"documents": ""})
+
+
+def test_natural_list():
+    assert natural_list(["a"]) == "a"
+    assert natural_list(["a", "b"]) == "a and b"
+    assert natural_list(["a", "b", "c"]) == "a, b, and c"
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_guidance.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.claims.guidance'`
+
+- [ ] **Step 3: Implement the guidance library**
+
+`services/api/app/claims/guidance.py`:
+
+```python
+"""Approved guidance snippets with provenance, and rendering of the follow-up
+templates. A template renders only when every placeholder has a value."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+from app.claims.documents import DocumentCatalog
+from app.contracts.fixtures import Claim, DocumentGuideline, FollowupRule
+
+SOURCE = "required_document_guideline.json"
+_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+
+
+class UnknownTopic(KeyError):
+    pass
+
+
+class GuidanceRenderError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class GuidanceSnippet:
+    topic: str
+    text: str
+    source: str
+
+
+def natural_list(items: Sequence[str]) -> str:
+    if len(items) <= 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def render_template(template: str, values: Mapping[str, str]) -> str:
+    def fill(match: re.Match[str]) -> str:
+        value = values.get(match.group(1))
+        if not value:
+            raise GuidanceRenderError(f"no value for placeholder {match.group(0)}")
+        return value
+
+    return _PLACEHOLDER.sub(fill, template)
+
+
+class GuidanceLibrary:
+    def __init__(self, guideline: DocumentGuideline, catalog: DocumentCatalog) -> None:
+        self._guideline = guideline
+        self._catalog = catalog
+        self._document_keys = _keys_by_code(guideline.document_guidance, catalog)
+        self._alternative_keys = _keys_by_code(
+            {k: v for k, v in guideline.document_alternative_guidance.items() if k != "default"}, catalog
+        )
+        self._rules: dict[str, tuple[int, FollowupRule]] = {
+            rule.topic: (index, rule) for index, rule in enumerate(guideline.claim_followup_guidance)
+        }
+
+    @property
+    def topics(self) -> tuple[str, ...]:
+        return tuple(self._rules)
+
+    def topic_examples(self, topic: str) -> tuple[str, ...]:
+        return self._rule(topic)[1].match_any
+
+    def for_documents(self, case_type: str, labels: Sequence[str]) -> tuple[GuidanceSnippet, ...]:
+        guideline = self._guideline
+        snippets = [GuidanceSnippet("default", guideline.default_guidance.en, f"{SOURCE}#/default_guidance/en")]
+        if case_type in guideline.case_type_guidance:
+            snippets.append(
+                GuidanceSnippet(
+                    f"case_type:{case_type}",
+                    guideline.case_type_guidance[case_type].en,
+                    f"{SOURCE}#/case_type_guidance/{case_type}/en",
+                )
+            )
+        for label in labels:
+            code = self._catalog.code_for(label)
+            key = self._document_keys.get(code)
+            if key is not None:
+                snippets.append(
+                    GuidanceSnippet(
+                        f"document:{code}",
+                        guideline.document_guidance[key].en,
+                        f"{SOURCE}#/document_guidance/{key}/en",
+                    )
+                )
+        return tuple(snippets)
+
+    def alternatives(self, label: str) -> GuidanceSnippet:
+        code = self._catalog.code_for(label)
+        key = self._alternative_keys.get(code)
+        if key is None:
+            return GuidanceSnippet(
+                "alternative:default",
+                self._guideline.document_alternative_guidance["default"].en,
+                f"{SOURCE}#/document_alternative_guidance/default/en",
+            )
+        return GuidanceSnippet(
+            f"alternative:{code}",
+            self._guideline.document_alternative_guidance[key].en,
+            f"{SOURCE}#/document_alternative_guidance/{key}/en",
+        )
+
+    def human_review_rule(self) -> GuidanceSnippet:
+        settings = self._guideline.claim_followup_settings
+        return GuidanceSnippet(
+            "human_review",
+            settings.human_review_after_document_alternatives_exhausted.en,
+            f"{SOURCE}#/claim_followup_settings/human_review_after_document_alternatives_exhausted/en",
+        )
+
+    def fallback(self) -> GuidanceSnippet:
+        return GuidanceSnippet(
+            "fallback", self._guideline.claim_followup_fallback.en, f"{SOURCE}#/claim_followup_fallback/en"
+        )
+
+    def followup(self, claim: Claim, topic: str) -> GuidanceSnippet:
+        index, rule = self._rule(topic)
+        if rule.requires_documents and not claim.documents_needed:
+            return self.fallback()
+        settings = self._guideline.claim_followup_settings
+        values = {
+            "case_id": claim.case_id,
+            "documents": natural_list(claim.documents_needed),
+            "average_processing_time_after_submission": settings.average_processing_time_after_submission.en,
+        }
+        return GuidanceSnippet(
+            f"followup:{topic}",
+            render_template(rule.en, values),
+            f"{SOURCE}#/claim_followup_guidance/{index}/en",
+        )
+
+    def _rule(self, topic: str) -> tuple[int, FollowupRule]:
+        try:
+            return self._rules[topic]
+        except KeyError:
+            raise UnknownTopic(topic) from None
+
+
+def _keys_by_code(entries: Mapping[str, object], catalog: DocumentCatalog) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    for key in entries:
+        code = catalog.code_for(key)
+        if code in keys:
+            raise ValueError(f"guidance keys {keys[code]!r} and {key!r} share document code {code}")
+        keys[code] = key
+    return keys
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_guidance.py -v`
+Expected: PASS (11 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/api/app/claims/guidance.py tests/unit/test_guidance.py
+git commit -m "feat: render approved guidance with provenance"
+```
+
+---
+
+### Task 9: Identity normalization
+
+**Files:**
+- Create: `services/api/app/identity/__init__.py`, `services/api/app/identity/normalize.py`, `tests/unit/test_normalize.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/unit/test_normalize.py`:
+
+```python
+import pytest
+
+from app.identity.normalize import (
+    Normalized,
+    Problem,
+    normalize,
+    normalize_dob,
+    normalize_email,
+    normalize_name,
+    normalize_phone,
+    normalize_ssn_last4,
+)
+
+
+@pytest.mark.parametrize(
+    "raw", ["Margaret Chen", "  MARGARET   chen ", "Mrs. Margaret Chen", "margaret-chen", "Ｍａｒｇａｒｅｔ Ｃｈｅｎ"]
+)
+def test_name_variants_normalize_to_one_value(raw):
+    assert normalize_name(raw) == Normalized("margaretchen")
+
+
+def test_spacing_inside_a_name_does_not_matter():
+    assert normalize_name("Yawen Li").value == normalize_name("Ya-Wen Li").value == "yawenli"
+
+
+def test_name_word_order_is_not_normalized():
+    assert normalize_name("Tian Ma").value != normalize_name("Ma Tian").value
+
+
+def test_first_name_alone_is_incomplete():
+    assert normalize_name("Margaret").problem is Problem.INCOMPLETE
+
+
+def test_invisible_characters_are_rejected():
+    assert normalize_name("Margaret​ Chen").problem is Problem.CONTROL_CHARACTERS
+    assert normalize_email("margaret@email.com‍").problem is Problem.CONTROL_CHARACTERS
+
+
+@pytest.mark.parametrize(
+    "raw", ["1985-03-15", "March 15, 1985", "15 March 1985", "Mar 15th 1985", "03/15/1985", "15/03/1985"]
+)
+def test_unambiguous_dates_of_birth(raw):
+    assert normalize_dob(raw) == Normalized("1985-03-15")
+
+
+def test_day_month_ambiguity_returns_both_readings():
+    result = normalize_dob("03/04/1985")
+    assert result.problem is Problem.AMBIGUOUS
+    assert result.candidates == ("1985-03-04", "1985-04-03")
+
+
+def test_same_day_and_month_is_not_ambiguous():
+    assert normalize_dob("05/05/1990") == Normalized("1990-05-05")
+
+
+@pytest.mark.parametrize(
+    ("raw", "problem"),
+    [
+        ("03/15/85", Problem.INCOMPLETE),
+        ("March 15, 85", Problem.INCOMPLETE),
+        ("1985-02-30", Problem.INVALID),
+        ("sometime in 1985", Problem.INVALID),
+    ],
+)
+def test_unusable_dates_of_birth(raw, problem):
+    assert normalize_dob(raw).problem is problem
+
+
+@pytest.mark.parametrize("raw", ["+1 (650) 521-2836", "650-521-2836", "16505212836", "650.521.2836"])
+def test_us_phone_formats(raw):
+    assert normalize_phone(raw, default_country_code="1", national_length=10) == Normalized("+16505212836")
+
+
+def test_explicit_country_code_is_kept():
+    result = normalize_phone("+44 20 7946 0958", default_country_code="1", national_length=10)
+    assert result == Normalized("+442079460958")
+
+
+@pytest.mark.parametrize(
+    ("raw", "problem"),
+    [("521-2836", Problem.INCOMPLETE), ("44 20 7946 0958", Problem.AMBIGUOUS), ("650-CALL-NOW", Problem.INVALID)],
+)
+def test_unusable_phone_numbers_are_not_guessed(raw, problem):
+    assert normalize_phone(raw, default_country_code="1", national_length=10).problem is problem
+
+
+def test_email_is_trimmed_and_case_folded_but_otherwise_kept():
+    assert normalize_email(" Margaret@Email.COM ") == Normalized("margaret@email.com")
+    assert normalize_email("yawen.li+claims@gmail.com") == Normalized("yawen.li+claims@gmail.com")
+
+
+@pytest.mark.parametrize("raw", ["not-an-email", "a@b", "a@@b.com", "a b@c.com"])
+def test_invalid_emails(raw):
+    assert normalize_email(raw).problem is Problem.INVALID
+
+
+def test_ssn_last4_keeps_leading_zeros_and_ignores_spacing():
+    assert normalize_ssn_last4("0042") == Normalized("0042")
+    assert normalize_ssn_last4("44 72") == Normalized("4472")
+
+
+@pytest.mark.parametrize(
+    ("raw", "problem"), [("447", Problem.INCOMPLETE), ("123-45-4472", Problem.INVALID), ("abcd", Problem.INVALID)]
+)
+def test_unusable_ssn_values(raw, problem):
+    assert normalize_ssn_last4(raw).problem is problem
+
+
+def test_dispatcher_uses_policy_phone_settings(policy):
+    assert normalize("phone", "650-521-2836", policy) == Normalized("+16505212836")
+    assert normalize("dob", "March 15, 1985", policy) == Normalized("1985-03-15")
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_normalize.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.identity'`
+
+- [ ] **Step 3: Implement normalization**
+
+`services/api/app/identity/__init__.py`:
+
+```python
+"""Identity evidence normalization and matching."""
+```
+
+`services/api/app/identity/normalize.py`:
+
+```python
+"""Deterministic normalization of caller-supplied identity values. Nothing here
+guesses: unclear input comes back with a problem the conversation can ask about."""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from dataclasses import dataclass
+from datetime import date
+from enum import StrEnum
+
+from app.policies import IdentityField, Policy
+
+
+class Problem(StrEnum):
+    INVALID = "invalid"
+    AMBIGUOUS = "ambiguous"
+    INCOMPLETE = "incomplete"
+    CONTROL_CHARACTERS = "control_characters"
+
+
+@dataclass(frozen=True)
+class Normalized:
+    value: str | None
+    problem: Problem | None = None
+    candidates: tuple[str, ...] = ()
+
+
+def _problem(problem: Problem, candidates: tuple[str, ...] = ()) -> Normalized:
+    return Normalized(None, problem, candidates)
+
+
+_INVISIBLE_CATEGORIES = {"Cc", "Cf", "Co", "Cs"}
+_ALLOWED_CONTROLS = {"\t", "\n", "\r"}
+
+
+def has_invisible_characters(text: str) -> bool:
+    return any(
+        unicodedata.category(ch) in _INVISIBLE_CATEGORIES and ch not in _ALLOWED_CONTROLS for ch in text
+    )
+
+
+_HONORIFICS = {"mr", "mrs", "ms", "miss", "mx", "dr"}
+_NAME_WORDS = re.compile(r"[^\W\d_]+")
+
+
+def normalize_name(raw: str) -> Normalized:
+    """Case, spacing, punctuation, and Unicode form are normalized; word order is not."""
+    if has_invisible_characters(raw):
+        return _problem(Problem.CONTROL_CHARACTERS)
+    words = _NAME_WORDS.findall(unicodedata.normalize("NFKC", raw).casefold())
+    while words and words[0] in _HONORIFICS:
+        words.pop(0)
+    if len(words) < 2:
+        return _problem(Problem.INCOMPLETE)
+    return Normalized("".join(words))
+
+
+_MONTH_NAMES = [
+    ("january", "jan"),
+    ("february", "feb"),
+    ("march", "mar"),
+    ("april", "apr"),
+    ("may",),
+    ("june", "jun"),
+    ("july", "jul"),
+    ("august", "aug"),
+    ("september", "sep", "sept"),
+    ("october", "oct"),
+    ("november", "nov"),
+    ("december", "dec"),
+]
+_MONTHS = {name: number for number, names in enumerate(_MONTH_NAMES, start=1) for name in names}
+_ISO = re.compile(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})")
+_NUMERIC = re.compile(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})")
+_DATE_FILLER = {"st", "nd", "rd", "th", "of", "the"}
+
+
+def _date_or_none(year: int, month: int, day: int) -> date | None:
+    if not 1900 <= year <= 2100:
+        return None
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def normalize_dob(raw: str) -> Normalized:
+    """Returns an ISO date, or a problem. Numeric dates where day and month could be
+    swapped come back AMBIGUOUS with both readings; two-digit years are INCOMPLETE."""
+    if has_invisible_characters(raw):
+        return _problem(Problem.CONTROL_CHARACTERS)
+    text = raw.strip().casefold()
+
+    if match := _ISO.fullmatch(text):
+        parsed = _date_or_none(*(int(part) for part in match.groups()))
+        return Normalized(parsed.isoformat()) if parsed else _problem(Problem.INVALID)
+
+    if match := _NUMERIC.fullmatch(text):
+        first, second, year_text = match.groups()
+        if len(year_text) == 2:
+            return _problem(Problem.INCOMPLETE)
+        year = int(year_text)
+        readings = {
+            reading
+            for reading in (_date_or_none(year, int(first), int(second)), _date_or_none(year, int(second), int(first)))
+            if reading is not None
+        }
+        if not readings:
+            return _problem(Problem.INVALID)
+        if len(readings) == 2:
+            return _problem(Problem.AMBIGUOUS, tuple(sorted(r.isoformat() for r in readings)))
+        return Normalized(readings.pop().isoformat())
+
+    tokens = [t for t in re.findall(r"[a-z]+|\d+", text) if t not in _DATE_FILLER]
+    months = [t for t in tokens if t in _MONTHS]
+    numbers = [t for t in tokens if t.isdigit()]
+    if len(tokens) != 3 or len(months) != 1 or len(numbers) != 2:
+        return _problem(Problem.INVALID)
+    years = [n for n in numbers if len(n) == 4]
+    days = [n for n in numbers if len(n) <= 2]
+    if not years:
+        return _problem(Problem.INCOMPLETE)
+    if len(years) != 1 or len(days) != 1:
+        return _problem(Problem.INVALID)
+    parsed = _date_or_none(int(years[0]), _MONTHS[months[0]], int(days[0]))
+    return Normalized(parsed.isoformat()) if parsed else _problem(Problem.INVALID)
+
+
+_PHONE_CHARACTERS = re.compile(r"[\d\s()+.\-]+")
+
+
+def normalize_phone(raw: str, *, default_country_code: str, national_length: int) -> Normalized:
+    """Returns E.164. The default country code applies only to national-length numbers;
+    anything else without an explicit country code is not guessed."""
+    if has_invisible_characters(raw):
+        return _problem(Problem.CONTROL_CHARACTERS)
+    text = raw.strip()
+    if not _PHONE_CHARACTERS.fullmatch(text) or "+" in text[1:]:
+        return _problem(Problem.INVALID)
+    digits = re.sub(r"\D", "", text)
+    if text.startswith("+"):
+        return Normalized(f"+{digits}") if 8 <= len(digits) <= 15 else _problem(Problem.INVALID)
+    if len(digits) == national_length:
+        return Normalized(f"+{default_country_code}{digits}")
+    if len(digits) == len(default_country_code) + national_length and digits.startswith(default_country_code):
+        return Normalized(f"+{digits}")
+    if len(digits) < national_length:
+        return _problem(Problem.INCOMPLETE)
+    return _problem(Problem.AMBIGUOUS)
+
+
+def normalize_email(raw: str) -> Normalized:
+    """Trims and case-folds. Dots and plus tags in the local part are kept as given."""
+    if has_invisible_characters(raw):
+        return _problem(Problem.CONTROL_CHARACTERS)
+    text = raw.strip()
+    local, separator, domain = text.partition("@")
+    if (
+        not separator
+        or not local
+        or "@" in domain
+        or "." not in domain.strip(".")
+        or any(ch.isspace() for ch in text)
+    ):
+        return _problem(Problem.INVALID)
+    return Normalized(f"{local.casefold()}@{domain.casefold()}")
+
+
+def normalize_ssn_last4(raw: str) -> Normalized:
+    """Exactly four digits, leading zeros kept. A full SSN is refused, not trimmed."""
+    if has_invisible_characters(raw):
+        return _problem(Problem.CONTROL_CHARACTERS)
+    digits = re.sub(r"[\s\-]", "", raw.strip())
+    if re.fullmatch(r"\d{4}", digits):
+        return Normalized(digits)
+    if re.fullmatch(r"\d{1,3}", digits):
+        return _problem(Problem.INCOMPLETE)
+    return _problem(Problem.INVALID)
+
+
+def normalize(field: IdentityField, raw: str, policy: Policy) -> Normalized:
+    match field:
+        case "full_name":
+            return normalize_name(raw)
+        case "dob":
+            return normalize_dob(raw)
+        case "phone":
+            return normalize_phone(
+                raw,
+                default_country_code=policy.phone.default_country_calling_code,
+                national_length=policy.phone.national_number_length,
+            )
+        case "email":
+            return normalize_email(raw)
+        case "ssn_last4":
+            return normalize_ssn_last4(raw)
+    raise ValueError(f"unknown identity field {field!r}")
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_normalize.py -v`
+Expected: PASS (39 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/api/app/identity tests/unit/test_normalize.py
+git commit -m "feat: normalize caller identity values without guessing"
+```
+
+---
+
+### Task 10: Identity field values
+
+**Files:**
+- Create: `services/api/app/identity/fields.py`, `tests/unit/test_identity_fields.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/unit/test_identity_fields.py`:
+
+```python
+import pytest
+
+from app.identity.fields import field_matches, record_values
+from app.identity.normalize import normalize_email, normalize_name
+
+
+def test_ssn_last4_matches_an_ssn_record(store):
+    assert field_matches(store.policyholder("P9"), "ssn_last4", "4472")
+
+
+@pytest.mark.parametrize(("party_id", "digits"), [("P12", "6688"), ("P13", "5317")])
+def test_national_id_never_counts_as_ssn(store, party_id, digits):
+    holder = store.policyholder(party_id)
+    assert record_values(holder, "ssn_last4") == frozenset()
+    assert not field_matches(holder, "ssn_last4", digits)
+
+
+def test_name_aliases_and_spacing_variants_match(store):
+    holder = store.policyholder("P13")
+    assert field_matches(holder, "full_name", normalize_name("Yaven Li").value)
+    assert field_matches(holder, "full_name", normalize_name("Yawen Li").value)
+
+
+def test_reversed_name_order_does_not_match(store):
+    assert not field_matches(store.policyholder("P12"), "full_name", normalize_name("Tian Ma").value)
+
+
+def test_duplicate_phone_alias_is_one_value(store):
+    assert record_values(store.policyholder("P13"), "phone") == frozenset({"+16505212830"})
+
+
+def test_email_alias_matches(store):
+    assert field_matches(store.policyholder("P13"), "email", normalize_email("yawen.li@example.com").value)
+
+
+def test_phone_one_digit_off_does_not_match(store):
+    assert not field_matches(store.policyholder("P9"), "phone", "+16505212830")
+
+
+def test_dob_matches_the_iso_value(store):
+    assert field_matches(store.policyholder("P9"), "dob", "1985-03-15")
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `uv run pytest tests/unit/test_identity_fields.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'app.identity.fields'`
+
+- [ ] **Step 3: Implement record field values**
+
+`services/api/app/identity/fields.py`:
+
+```python
+"""Which normalized values a policyholder record holds for each permitted field.
+Aliases count as the same field, and a national ID never answers for an SSN."""
+
+from __future__ import annotations
+
+from app.contracts.fixtures import Policyholder
+from app.identity.normalize import normalize_email, normalize_name
+from app.policies import IdentityField
+
+
+def record_values(record: Policyholder, field: IdentityField) -> frozenset[str]:
+    match field:
+        case "full_name":
+            names = (normalize_name(name).value for name in (record.name, *record.name_aliases))
+            return frozenset(name for name in names if name)
+        case "dob":
+            return frozenset({record.dob.isoformat()})
+        case "phone":
+            return frozenset((record.phone, *record.phone_aliases))
+        case "email":
+            emails = (normalize_email(email).value for email in (record.email, *record.email_aliases))
+            return frozenset(email for email in emails if email)
+        case "ssn_last4":
+            return frozenset({record.id_last4}) if record.id_type == "ssn_last4" else frozenset()
+    raise ValueError(f"unknown identity field {field!r}")
+
+
+def field_matches(record: Policyholder, field: IdentityField, normalized_value: str) -> bool:
+    return normalized_value in record_values(record, field)
+```
+
+- [ ] **Step 4: Run them to verify they pass**
+
+Run: `uv run pytest tests/unit/test_identity_fields.py -v`
+Expected: PASS (9 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/api/app/identity/fields.py tests/unit/test_identity_fields.py
+git commit -m "feat: expose normalized record values per identity field"
+```
+
+---
+
+### Task 11: Milestone verification
+
+- [ ] **Step 1: Run the whole suite**
+
+Run: `uv run pytest`
+Expected: every test passes; no warnings about missing modules.
+
+- [ ] **Step 2: Confirm the acceptance gate**
+
+| Gate item | Evidence |
+|---|---|
+| All six fixtures validate | `test_fixture_contracts.py`, `test_importer.py::test_store_holds_every_fixture_record` |
+| Document aliases resolve | `test_documents.py`, importer label checks, `test_guidance.py` |
+| Date and Decimal behavior tested | `test_money_and_deadlines.py`, `test_fixture_contracts.py` money tests, `test_normalize.py` DOB tests |
+| National ID cannot count as SSN | `test_identity_fields.py::test_national_id_never_counts_as_ssn`, `test_policies.py::test_national_id_cannot_be_added_as_a_permitted_field` |
+| Original fixtures unchanged | `test_fixture_integrity.py`, `test_importer.py::test_loading_leaves_fixture_files_untouched` |
+
+- [ ] **Step 3: Confirm the working tree is clean**
+
+Run: `git status --short`
+Expected: no output.
