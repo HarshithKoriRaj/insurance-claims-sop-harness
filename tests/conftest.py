@@ -52,3 +52,10 @@ def catalog(policies_dir):
     from app.claims.documents import load_document_catalog
 
     return load_document_catalog(policies_dir / "document_codes.toml")
+
+
+@pytest.fixture(scope="session")
+def store(fixtures_dir, catalog):
+    from app.claims.importer import load_fixtures
+
+    return load_fixtures(fixtures_dir, catalog)
