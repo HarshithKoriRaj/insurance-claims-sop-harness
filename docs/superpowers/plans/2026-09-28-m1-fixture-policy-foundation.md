@@ -1355,6 +1355,73 @@ def test_validation_errors_do_not_echo_record_values(fixture_copy, catalog):
     assert "policyholders.json" in message and "id_last4" in message
     assert "44720" not in message
     assert caught.value.__cause__ is None
+
+
+def test_reference_errors_do_not_echo_names(fixture_copy, catalog):
+    fixture_copy.edit("representatives.json", lambda reps: reps[0].update(buyer_party_id="P99"))
+    with pytest.raises(FixtureError, match=r"\[0\] buyer does not match a policyholder \(P99\)") as caught:
+        load_fixtures(fixture_copy.path, catalog)
+    assert "Chen" not in str(caught.value)
+
+
+def test_duplicate_policy_numbers_name_the_parties_not_the_number(fixture_copy, catalog):
+    fixture_copy.edit("policyholders.json", lambda holders: holders[1].update(policy_number="POL-9921"))
+    with pytest.raises(FixtureError, match="parties share a policy number: P7, P9") as caught:
+        load_fixtures(fixture_copy.path, catalog)
+    assert "POL-" not in str(caught.value)
+
+
+def _drop_default_alternative(guideline):
+    del guideline["document_alternative_guidance"]["default"]
+
+
+def _add_unmapped_guidance_key(guideline):
+    guideline["document_guidance"]["x-ray"] = {"en": "text"}
+
+
+def _duplicate_party_id(holders):
+    holders[1]["party_id"] = holders[0]["party_id"]
+
+
+@pytest.mark.parametrize(
+    ("name", "change", "message"),
+    [
+        ("required_document_guideline.json", _drop_default_alternative, "has no default"),
+        ("required_document_guideline.json", _add_unmapped_guidance_key, "'x-ray' has no document code"),
+        ("policyholders.json", _duplicate_party_id, "duplicate party_id: P9"),
+    ],
+    ids=["missing-default-alternative", "unmapped-guidance-key", "duplicate-party-id"],
+)
+def test_other_reference_errors_are_rejected(fixture_copy, catalog, name, change, message):
+    fixture_copy.edit(name, change)
+    with pytest.raises(FixtureError, match=message):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+def test_repeated_keys_in_a_json_object_are_rejected(fixture_copy, catalog):
+    path = fixture_copy.path / "claims.json"
+    text = path.read_text(encoding="utf-8")
+    assert '"status": "denied",' in text
+    repeated = text.replace('"status": "denied",', '"status": "denied", "status": "open",', 1)
+    path.write_text(repeated, encoding="utf-8")
+    with pytest.raises(FixtureError, match="claims.json: repeated key in one JSON object: status"):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"{not json", '[{"rep_name": "L\u00f3pez"}]'.encode("latin-1"), None],
+    ids=["malformed-json", "not-utf8", "missing-file"],
+)
+def test_unreadable_files_are_named_without_chaining(fixture_copy, catalog, content):
+    path = fixture_copy.path / "representatives.json"
+    if content is None:
+        path.unlink()
+    else:
+        path.write_bytes(content)
+    with pytest.raises(FixtureError, match="representatives.json") as caught:
+        load_fixtures(fixture_copy.path, catalog)
+    assert caught.value.__cause__ is None
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -1368,7 +1435,8 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.claims.importer'`
 
 ```python
 """Loads the supplied fixtures read-only, validates each file, and checks the
-references between files. Nothing here writes to the fixture directory."""
+references between files. Nothing here writes to the fixture directory, and no
+error message carries a record's personal data."""
 
 from __future__ import annotations
 
@@ -1432,9 +1500,11 @@ def load_fixtures(directory: Path, catalog: DocumentCatalog) -> FixtureStore:
     parsed: dict[str, Any] = {}
     for name, adapter in _FILES.items():
         try:
-            raw[name] = json.loads((directory / name).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise FixtureError(f"{name}: {exc}") from exc
+            text = (directory / name).read_text(encoding="utf-8")
+            raw[name] = json.loads(text, object_pairs_hook=_reject_repeated_keys)
+        except (OSError, ValueError) as exc:
+            # from None: JSONDecodeError.doc and UnicodeDecodeError.object hold the whole file.
+            raise FixtureError(f"{name}: {exc}") from None
         try:
             parsed[name] = adapter.validate_python(raw[name])
         except ValidationError as exc:
@@ -1460,6 +1530,14 @@ def load_fixtures(directory: Path, catalog: DocumentCatalog) -> FixtureStore:
     return store
 
 
+def _reject_repeated_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [key for key, _ in pairs]
+    repeated = sorted({key for key in keys if keys.count(key) > 1})
+    if repeated:
+        raise ValueError(f"repeated key in one JSON object: {', '.join(repeated)}")
+    return dict(pairs)
+
+
 def _content_hash(record: Any) -> str:
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -1468,7 +1546,7 @@ def _content_hash(record: Any) -> str:
 def _check_references(store: FixtureStore, catalog: DocumentCatalog) -> None:
     party_ids = [p.party_id for p in store.policyholders]
     _require_unique("party_id", party_ids)
-    _require_unique("policy_number", [p.policy_number for p in store.policyholders])
+    _require_unique_policy_numbers(store.policyholders)
     _require_unique("case_id", [c.case_id for c in store.claims])
 
     for claim in store.claims:
@@ -1477,12 +1555,11 @@ def _check_references(store: FixtureStore, catalog: DocumentCatalog) -> None:
         for label in claim.documents_needed:
             _require_code(catalog, label, f"claims.json: {claim.case_id}")
 
-    for rep in store.representatives:
+    for index, rep in enumerate(store.representatives):
         holder = store.policyholder(rep.buyer_party_id)
         if holder is None or holder.name != rep.buyer_name:
             raise FixtureError(
-                f"representatives.json: {rep.rep_name} names {rep.buyer_name} ({rep.buyer_party_id}), "
-                "which does not match a policyholder"
+                f"representatives.json: [{index}] buyer does not match a policyholder ({rep.buyer_party_id})"
             )
 
     guideline = store.guideline
@@ -1497,9 +1574,21 @@ def _check_references(store: FixtureStore, catalog: DocumentCatalog) -> None:
 
 
 def _require_unique(field: str, values: list[str]) -> None:
+    """For values that are not personal data: IDs and topics."""
     duplicates = sorted({v for v in values if values.count(v) > 1})
     if duplicates:
         raise FixtureError(f"duplicate {field}: {', '.join(duplicates)}")
+
+
+def _require_unique_policy_numbers(holders: tuple[Policyholder, ...]) -> None:
+    # A policy number identifies a customer, so name the pseudonymous party IDs instead.
+    parties_by_number: dict[str, list[str]] = {}
+    for holder in holders:
+        parties_by_number.setdefault(holder.policy_number, []).append(holder.party_id)
+    shared = sorted(sorted(ids) for ids in parties_by_number.values() if len(ids) > 1)
+    if shared:
+        groups = "; ".join(", ".join(ids) for ids in shared)
+        raise FixtureError(f"policyholders.json: parties share a policy number: {groups}")
 
 
 def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
@@ -1512,7 +1601,7 @@ def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_importer.py -v`
-Expected: PASS (14 tests)
+Expected: PASS (23 tests)
 
 - [ ] **Step 5: Commit**
 
