@@ -542,9 +542,15 @@ def test_demo_mode_can_use_the_real_calendar(policy):
     assert isinstance(build_clock("demo", policy, "today"), SystemClock)
 
 
-def test_production_mode_rejects_a_business_date_override(policy):
+def test_malformed_override_is_a_configuration_error(policy):
+    with pytest.raises(ClockConfigError, match="not an ISO date"):
+        build_clock("demo", policy, "March 1st")
+
+
+@pytest.mark.parametrize("override", ["2026-03-01", "today"])
+def test_production_mode_rejects_any_business_date_override(policy, override):
     with pytest.raises(ClockConfigError):
-        build_clock("production", policy, "2026-03-01")
+        build_clock("production", policy, override)
 
 
 def test_production_mode_uses_the_system_clock(policy):
@@ -625,7 +631,12 @@ def build_clock(app_mode: str, policy: Policy, business_date_override: str | Non
         if business_date_override == "today":
             return SystemClock(timezone)
         if business_date_override is not None:
-            return DemoClock(date.fromisoformat(business_date_override))
+            try:
+                return DemoClock(date.fromisoformat(business_date_override))
+            except ValueError:
+                raise ClockConfigError(
+                    f"business-date override {business_date_override!r} is not an ISO date"
+                ) from None
         return DemoClock(policy.demo.business_date)
     raise ClockConfigError(f"unknown APP_MODE {app_mode!r}; expected 'demo' or 'production'")
 ```
@@ -633,7 +644,7 @@ def build_clock(app_mode: str, policy: Policy, business_date_override: str | Non
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_clock.py -v`
-Expected: PASS (7 tests)
+Expected: PASS (9 tests)
 
 - [ ] **Step 5: Commit**
 
