@@ -1,6 +1,7 @@
 # Every document label used in the fixtures, from claims and from guidance keys,
-# mapped to one document code. Callers always see the claim's own label, so a
-# guidance key's "original" never becomes a stated requirement.
+# mapped to one document code. Callers see the claim's own label as the document's
+# name, so a guidance key's "original" never becomes a stated requirement; approved
+# guidance text may still mention an original conditionally.
 version = "2026-09-28"
 
 [codes.PATHOLOGY_REPORT]
