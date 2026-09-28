@@ -1,0 +1,34 @@
+# Proposed, configurable demo defaults from docs/2026-09-28-sop-harness-plan.md.
+# These are not insurer policy; production values need insurer approval.
+version = "2026-09-28"
+
+[verification]
+required_matching_fields = 3
+max_failed_submissions = 3
+idle_expiry_minutes = 30
+permitted_fields = ["full_name", "dob", "phone", "email", "ssn_last4"]
+
+[session]
+max_age_hours = 8
+max_input_characters = 8000
+recent_turns = 12
+max_turns = 60
+
+[recovery]
+# Consecutive unrelated requests: the 2nd offers a human, the 3rd stops answering them.
+unrelated_offer_human_at = 2
+unrelated_stop_at = 3
+# Explicit refusals to continue verification before persuasion stops.
+refusals_before_stop = 2
+
+[claims]
+fact_max_age_minutes = 5
+
+[phone]
+# Applied only to national-length numbers given without a country code.
+default_country_calling_code = "1"
+national_number_length = 10
+
+[demo]
+business_date = 2026-03-01
+business_timezone = "America/Los_Angeles"

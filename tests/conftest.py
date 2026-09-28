@@ -38,3 +38,10 @@ def fixture_copy(tmp_path: Path, fixtures_dir: Path) -> FixtureCopy:
     target = tmp_path / "fixtures"
     shutil.copytree(fixtures_dir, target)
     return FixtureCopy(target)
+
+
+@pytest.fixture(scope="session")
+def policy(policies_dir):
+    from app.policies import load_policy
+
+    return load_policy(policies_dir / "defaults.toml")
