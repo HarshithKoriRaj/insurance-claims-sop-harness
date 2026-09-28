@@ -751,7 +751,21 @@ def test_remaining_fixture_files_validate(fixtures_dir):
     DocumentGuideline.model_validate(_read(fixtures_dir, "required_document_guideline.json"))
 
 
-@pytest.mark.parametrize("bad", [1450.0, "1450", "1,450.00", "abc", "-1.00", "١٤٥٠.٠٠"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        1450.0,
+        "1450",
+        "1,450.00",
+        "abc",
+        "-1.00",
+        "١٤٥٠.٠٠",
+        Decimal("1450.5"),
+        Decimal("-1.00"),
+        Decimal("-0.00"),
+        Decimal("NaN"),
+    ],
+)
 def test_money_must_be_a_two_place_decimal_string(bad):
     with pytest.raises(ValidationError):
         Claim.model_validate({**VALID_CLAIM, "net_pay": bad})
@@ -821,8 +835,9 @@ def test_requires_documents_must_be_a_real_boolean(fixtures_dir):
         (Policyholder, {**VALID_HOLDER, "id_type": "passport_last4"}),
         (Policyholder, {**VALID_HOLDER, "party_id": ""}),
         (ConsentScenario, {"status_sequence": []}),
+        (Claim, {**VALID_CLAIM, "status": "denied", "denial_reason": ""}),
     ],
-    ids=["unknown-id-type", "empty-party-id", "empty-consent-sequence"],
+    ids=["unknown-id-type", "empty-party-id", "empty-consent-sequence", "empty-denial-reason"],
 )
 def test_other_invalid_records_are_rejected(model, data):
     with pytest.raises(ValidationError):
@@ -865,7 +880,7 @@ _ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 def _money(value: object) -> Decimal:
     """Two-place decimal strings from JSON, or an equivalent Decimal on round trips. Never floats."""
     if isinstance(value, Decimal):
-        if value.is_finite() and value >= 0 and value.as_tuple().exponent == -2:
+        if value.is_finite() and not value.is_signed() and value.as_tuple().exponent == -2:
             return value
     elif isinstance(value, str) and _MONEY.fullmatch(value):
         return Decimal(value)
@@ -914,8 +929,8 @@ class Claim(_Strict):
     case_type: CaseType
     created_at: IsoDate
     status: Literal["denied", "closed", "open"]
-    summary: str
-    denial_reason: str | None = None
+    summary: NonEmpty
+    denial_reason: NonEmpty | None = None
     documents_needed: tuple[NonEmpty, ...] = ()
     appeal_deadline: IsoDate | None = None
     expected_reimbursement_amount: Money
@@ -976,7 +991,7 @@ class DocumentGuideline(_Strict):
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_fixture_contracts.py -v`
-Expected: PASS (28 tests)
+Expected: PASS (33 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1233,6 +1248,26 @@ def test_duplicate_case_ids_are_rejected(fixture_copy, catalog):
     fixture_copy.edit("claims.json", lambda claims: claims.append(dict(claims[0])))
     with pytest.raises(FixtureError, match="duplicate case_id: CL-2048"):
         load_fixtures(fixture_copy.path, catalog)
+
+
+def test_duplicate_followup_topics_are_rejected(fixture_copy, catalog):
+    def duplicate_topic(guideline):
+        rules = guideline["claim_followup_guidance"]
+        rules[1]["topic"] = rules[0]["topic"]
+
+    fixture_copy.edit("required_document_guideline.json", duplicate_topic)
+    with pytest.raises(FixtureError, match="duplicate follow-up topic: missing_required_material_alternatives"):
+        load_fixtures(fixture_copy.path, catalog)
+
+
+def test_validation_errors_do_not_echo_record_values(fixture_copy, catalog):
+    fixture_copy.edit("policyholders.json", lambda holders: holders[0].update(id_last4="44720"))
+    with pytest.raises(FixtureError) as caught:
+        load_fixtures(fixture_copy.path, catalog)
+    message = str(caught.value)
+    assert "policyholders.json" in message and "id_last4" in message
+    assert "44720" not in message
+    assert caught.value.__cause__ is None
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -1310,9 +1345,17 @@ def load_fixtures(directory: Path, catalog: DocumentCatalog) -> FixtureStore:
     for name, adapter in _FILES.items():
         try:
             raw[name] = json.loads((directory / name).read_text(encoding="utf-8"))
-            parsed[name] = adapter.validate_python(raw[name])
-        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+        except (OSError, json.JSONDecodeError) as exc:
             raise FixtureError(f"{name}: {exc}") from exc
+        try:
+            parsed[name] = adapter.validate_python(raw[name])
+        except ValidationError as exc:
+            # Report where and why, never the rejected values: fixtures hold personal data.
+            details = "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors(include_input=False, include_url=False)
+            )
+            raise FixtureError(f"{name}: {details}") from None
 
     store = FixtureStore(
         policyholders=parsed["policyholders.json"],
@@ -1353,6 +1396,7 @@ def _check_references(store: FixtureStore, catalog: DocumentCatalog) -> None:
             )
 
     guideline = store.guideline
+    _require_unique("follow-up topic", [rule.topic for rule in guideline.claim_followup_guidance])
     for key in guideline.document_guidance:
         _require_code(catalog, key, "required_document_guideline.json: document_guidance")
     for key in guideline.document_alternative_guidance:
@@ -1378,7 +1422,7 @@ def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_importer.py -v`
-Expected: PASS (11 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -2126,7 +2170,7 @@ git commit -m "feat: normalize caller identity values without guessing"
 ```python
 import pytest
 
-from app.identity.fields import field_matches, record_values
+from app.identity.fields import UnusableRecordValue, field_matches, record_values
 from app.identity.normalize import normalize_email, normalize_name
 
 
@@ -2165,6 +2209,18 @@ def test_phone_one_digit_off_does_not_match(store):
 
 def test_dob_matches_the_iso_value(store):
     assert field_matches(store.policyholder("P9"), "dob", "1985-03-15")
+
+
+def test_every_stored_identity_value_is_usable(store):
+    for holder in store.policyholders:
+        for field in ("full_name", "dob", "phone", "email"):
+            assert record_values(holder, field), (holder.party_id, field)
+
+
+def test_an_unusable_stored_name_raises_instead_of_being_dropped(store):
+    holder = store.policyholder("P9").model_copy(update={"name_aliases": ("Margaret",)})
+    with pytest.raises(UnusableRecordValue, match="P9: a stored full_name cannot be normalized"):
+        record_values(holder, "full_name")
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -2178,27 +2234,41 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.identity.fields'`
 
 ```python
 """Which normalized values a policyholder record holds for each permitted field.
-Aliases count as the same field, and a national ID never answers for an SSN."""
+Aliases count as the same field, and a national ID never answers for an SSN. A
+stored value that cannot be normalized is a data error and raises; it is never
+silently dropped."""
 
 from __future__ import annotations
 
 from app.contracts.fixtures import Policyholder
-from app.identity.normalize import normalize_email, normalize_name
+from app.identity.normalize import Normalized, normalize_email, normalize_name
 from app.policies import IdentityField
+
+
+class UnusableRecordValue(ValueError):
+    pass
+
+
+def _usable(result: Normalized, record: Policyholder, field: IdentityField) -> str:
+    if result.value is None:
+        raise UnusableRecordValue(
+            f"{record.party_id}: a stored {field} cannot be normalized ({result.problem})"
+        )
+    return result.value
 
 
 def record_values(record: Policyholder, field: IdentityField) -> frozenset[str]:
     match field:
         case "full_name":
-            names = (normalize_name(name).value for name in (record.name, *record.name_aliases))
-            return frozenset(name for name in names if name)
+            names = (record.name, *record.name_aliases)
+            return frozenset(_usable(normalize_name(name), record, field) for name in names)
         case "dob":
             return frozenset({record.dob.isoformat()})
         case "phone":
             return frozenset((record.phone, *record.phone_aliases))
         case "email":
-            emails = (normalize_email(email).value for email in (record.email, *record.email_aliases))
-            return frozenset(email for email in emails if email)
+            emails = (record.email, *record.email_aliases)
+            return frozenset(_usable(normalize_email(email), record, field) for email in emails)
         case "ssn_last4":
             return frozenset({record.id_last4}) if record.id_type == "ssn_last4" else frozenset()
     raise ValueError(f"unknown identity field {field!r}")
@@ -2211,7 +2281,7 @@ def field_matches(record: Policyholder, field: IdentityField, normalized_value: 
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_identity_fields.py -v`
-Expected: PASS (9 tests)
+Expected: PASS (11 tests)
 
 - [ ] **Step 5: Commit**
 
