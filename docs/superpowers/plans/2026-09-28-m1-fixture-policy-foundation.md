@@ -1280,6 +1280,13 @@ def test_lookups_return_none_for_unknown_ids(store):
     assert store.policyholder("P99") is None
 
 
+def test_store_mappings_are_read_only(store):
+    with pytest.raises(TypeError):
+        store.claim_versions["CL-2048"] = "tampered"
+    with pytest.raises(TypeError):
+        store.consent_scenarios["surprise"] = store.consent_scenarios["default"]
+
+
 def test_claim_versions_are_stable_content_hashes(store, fixtures_dir, catalog):
     assert load_fixtures(fixtures_dir, catalog).claim_versions == store.claim_versions
     assert len(set(store.claim_versions.values())) == 5
@@ -1370,6 +1377,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -1441,10 +1449,12 @@ def load_fixtures(directory: Path, catalog: DocumentCatalog) -> FixtureStore:
         policyholders=parsed["policyholders.json"],
         claims=parsed["claims.json"],
         claim_schema=parsed["claim_schema.json"],
-        consent_scenarios=parsed["consent_scenarios.json"],
+        consent_scenarios=MappingProxyType(parsed["consent_scenarios.json"]),
         representatives=parsed["representatives.json"],
         guideline=parsed["required_document_guideline.json"],
-        claim_versions={record["case_id"]: _content_hash(record) for record in raw["claims.json"]},
+        claim_versions=MappingProxyType(
+            {record["case_id"]: _content_hash(record) for record in raw["claims.json"]}
+        ),
     )
     _check_references(store, catalog)
     return store
@@ -1502,7 +1512,7 @@ def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_importer.py -v`
-Expected: PASS (13 tests)
+Expected: PASS (14 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1534,6 +1544,7 @@ def test_usd_formatting_keeps_cents_and_thousands():
     assert format_usd(Decimal("1450.00")) == "$1,450.00"
     assert format_usd(Decimal("0.00")) == "$0.00"
     assert format_usd(Decimal("3200.5")) == "$3,200.50"
+    assert format_usd(Decimal("1234567.89")) == "$1,234,567.89"
 
 
 def test_appeal_deadline_is_ahead_on_the_demo_date(store):
@@ -1697,6 +1708,12 @@ def test_unknown_topic_is_rejected(library, store):
 def test_match_any_phrases_are_exposed_only_as_examples(library):
     assert "how long" in library.topic_examples("processing_time_after_submission")
     assert library.topic_examples("missing_required_material_alternatives") == ()
+
+
+def test_human_review_rule_comes_with_provenance(library):
+    rule = library.human_review_rule()
+    assert rule.text.startswith("If the caller still cannot provide the requested item")
+    assert rule.source.endswith("#/claim_followup_settings/human_review_after_document_alternatives_exhausted/en")
 
 
 def test_rendering_refuses_an_empty_placeholder():
@@ -1874,7 +1891,7 @@ def _keys_by_code(entries: Mapping[str, object], catalog: DocumentCatalog) -> di
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_guidance.py -v`
-Expected: PASS (11 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1996,6 +2013,25 @@ def test_ssn_last4_keeps_leading_zeros_and_ignores_spacing():
     assert normalize_ssn_last4("44 72") == Normalized("4472")
 
 
+def test_full_width_digits_are_read_as_ascii(policy):
+    assert normalize_ssn_last4("４４７２") == Normalized("4472")
+    assert normalize("phone", "６５０-５２１-２８３６", policy) == Normalized("+16505212836")
+    assert normalize_dob("１９８５-０３-１５") == Normalized("1985-03-15")
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "raw"),
+    [
+        (normalize_ssn_last4, "٤٤٧٢"),
+        (normalize_dob, "١٩٨٥-٠٣-١٥"),
+        (lambda raw: normalize_phone(raw, default_country_code="1", national_length=10), "٦٥٠٥٢١٢٨٣٦"),
+    ],
+    ids=["ssn", "dob", "phone"],
+)
+def test_digits_from_other_scripts_are_rejected(normalizer, raw):
+    assert normalizer(raw).problem is Problem.INVALID
+
+
 @pytest.mark.parametrize(
     ("raw", "problem"), [("447", Problem.INCOMPLETE), ("123-45-4472", Problem.INVALID), ("abcd", Problem.INVALID)]
 )
@@ -2025,7 +2061,9 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.identity'`
 
 ```python
 """Deterministic normalization of caller-supplied identity values. Nothing here
-guesses: unclear input comes back with a problem the conversation can ask about."""
+guesses: unclear input comes back with a problem the conversation can ask about.
+Numeric input is NFKC-normalized (full-width digits become ASCII) and then only
+ASCII digits are accepted, matching the stored values."""
 
 from __future__ import annotations
 
@@ -2097,8 +2135,8 @@ _MONTH_NAMES = [
     ("december", "dec"),
 ]
 _MONTHS = {name: number for number, names in enumerate(_MONTH_NAMES, start=1) for name in names}
-_ISO = re.compile(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})")
-_NUMERIC = re.compile(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})")
+_ISO = re.compile(r"([0-9]{4})[-/.]([0-9]{1,2})[-/.]([0-9]{1,2})")
+_NUMERIC = re.compile(r"([0-9]{1,2})[-/.]([0-9]{1,2})[-/.]([0-9]{2}|[0-9]{4})")
 _DATE_FILLER = {"st", "nd", "rd", "th", "of", "the"}
 
 
@@ -2116,7 +2154,7 @@ def normalize_dob(raw: str) -> Normalized:
     swapped come back AMBIGUOUS with both readings; two-digit years are INCOMPLETE."""
     if has_invisible_characters(raw):
         return _problem(Problem.CONTROL_CHARACTERS)
-    text = raw.strip().casefold()
+    text = unicodedata.normalize("NFKC", raw).strip().casefold()
 
     if match := _ISO.fullmatch(text):
         parsed = _date_or_none(*(int(part) for part in match.groups()))
@@ -2138,7 +2176,7 @@ def normalize_dob(raw: str) -> Normalized:
             return _problem(Problem.AMBIGUOUS, tuple(sorted(r.isoformat() for r in readings)))
         return Normalized(readings.pop().isoformat())
 
-    tokens = [t for t in re.findall(r"[a-z]+|\d+", text) if t not in _DATE_FILLER]
+    tokens = [t for t in re.findall(r"[a-z]+|[0-9]+", text) if t not in _DATE_FILLER]
     months = [t for t in tokens if t in _MONTHS]
     numbers = [t for t in tokens if t.isdigit()]
     if len(tokens) != 3 or len(months) != 1 or len(numbers) != 2:
@@ -2153,7 +2191,7 @@ def normalize_dob(raw: str) -> Normalized:
     return Normalized(parsed.isoformat()) if parsed else _problem(Problem.INVALID)
 
 
-_PHONE_CHARACTERS = re.compile(r"[\d\s()+.\-]+")
+_PHONE_CHARACTERS = re.compile(r"[0-9\s()+.\-]+")
 
 
 def normalize_phone(raw: str, *, default_country_code: str, national_length: int) -> Normalized:
@@ -2161,10 +2199,10 @@ def normalize_phone(raw: str, *, default_country_code: str, national_length: int
     anything else without an explicit country code is not guessed."""
     if has_invisible_characters(raw):
         return _problem(Problem.CONTROL_CHARACTERS)
-    text = raw.strip()
+    text = unicodedata.normalize("NFKC", raw).strip()
     if not _PHONE_CHARACTERS.fullmatch(text) or "+" in text[1:]:
         return _problem(Problem.INVALID)
-    digits = re.sub(r"\D", "", text)
+    digits = re.sub(r"[^0-9]", "", text)
     if text.startswith("+"):
         return Normalized(f"+{digits}") if 8 <= len(digits) <= 15 else _problem(Problem.INVALID)
     if len(digits) == national_length:
@@ -2197,10 +2235,10 @@ def normalize_ssn_last4(raw: str) -> Normalized:
     """Exactly four digits, leading zeros kept. A full SSN is refused, not trimmed."""
     if has_invisible_characters(raw):
         return _problem(Problem.CONTROL_CHARACTERS)
-    digits = re.sub(r"[\s\-]", "", raw.strip())
-    if re.fullmatch(r"\d{4}", digits):
+    digits = re.sub(r"[\s\-]", "", unicodedata.normalize("NFKC", raw).strip())
+    if re.fullmatch(r"[0-9]{4}", digits):
         return Normalized(digits)
-    if re.fullmatch(r"\d{1,3}", digits):
+    if re.fullmatch(r"[0-9]{1,3}", digits):
         return _problem(Problem.INCOMPLETE)
     return _problem(Problem.INVALID)
 
@@ -2227,7 +2265,7 @@ def normalize(field: IdentityField, raw: str, policy: Policy) -> Normalized:
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_normalize.py -v`
-Expected: PASS (39 tests)
+Expected: PASS (43 tests)
 
 - [ ] **Step 5: Commit**
 
