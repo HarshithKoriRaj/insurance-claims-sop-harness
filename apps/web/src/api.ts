@@ -14,7 +14,7 @@ export type IdentityField = 'full_name' | 'dob' | 'phone' | 'email' | 'ssn_last4
 
 export type Lifecycle = 'ACTIVE' | 'HANDOFF_PENDING' | 'CLOSED'
 
-export type ModelMode = 'claude' | 'offline'
+export type ModelMode = 'claude' | 'openai' | 'offline'
 
 export type SummaryStatus = 'none' | 'offered' | 'sent' | 'skipped'
 

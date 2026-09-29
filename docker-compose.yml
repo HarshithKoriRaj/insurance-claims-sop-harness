@@ -4,9 +4,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Read from your shell or from .env next to this file.
+      # Read from your shell or from .env next to this file. Set one of the two keys.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
       APP_MODE: ${APP_MODE:-demo}
       BUSINESS_DATE_OVERRIDE: ${BUSINESS_DATE_OVERRIDE:-}
       SMTP_HOST: mailpit

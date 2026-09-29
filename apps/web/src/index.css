@@ -661,7 +661,8 @@ button:disabled {
   font-weight: 700;
 }
 
-.badge--claude {
+.badge--claude,
+.badge--openai {
   background: var(--color-surface-alt);
   color: var(--color-primary);
   border: 1px solid var(--color-primary);

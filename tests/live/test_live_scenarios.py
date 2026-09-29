@@ -1,4 +1,4 @@
-"""Scenarios against the real Claude API. They check behaviour (phase, gates, what is
+"""Scenarios against the real model API (Claude or OpenAI). They check behaviour (phase, gates, what is
 and is not disclosed), not exact wording. Skipped unless RUN_LIVE_TESTS=1 and
 ANTHROPIC_API_KEY are set:
 
@@ -16,8 +16,9 @@ from app.runtime import build_runtime
 from app.settings import load_settings
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="live model tests need RUN_LIVE_TESTS=1 and ANTHROPIC_API_KEY",
+    os.environ.get("RUN_LIVE_TESTS") != "1"
+    or not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")),
+    reason="live model tests need RUN_LIVE_TESTS=1 and an ANTHROPIC_API_KEY or OPENAI_API_KEY",
 )
 
 MARGARET = (
@@ -44,7 +45,7 @@ def mailer():
 def client(tmp_path, mailer):
     env = {**os.environ, "DATABASE_PATH": str(tmp_path / "live.sqlite3"), "WEB_DIST_DIR": str(tmp_path / "no-web")}
     runtime = build_runtime(load_settings(env), mailer=mailer)
-    assert runtime.conversation.mode == "claude"
+    assert runtime.conversation.mode in ("claude", "openai")
     return TestClient(create_app(runtime))
 
 

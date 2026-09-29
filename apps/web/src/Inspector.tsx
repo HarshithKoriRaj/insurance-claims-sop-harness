@@ -123,7 +123,7 @@ export default function Inspector({ view }: InspectorProps) {
             <p>
               Model mode:{' '}
               <span className={`badge badge--${view.model_mode}`}>
-                {view.model_mode === 'claude' ? 'Claude' : 'Offline rules'}
+                {{ claude: 'Claude', openai: 'OpenAI', offline: 'Offline rules' }[view.model_mode]}
               </span>
             </p>
           </section>

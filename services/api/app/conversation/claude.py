@@ -47,6 +47,8 @@ The workflow engine has already decided what happens this turn. Its decision is 
 
 
 class ClaudeModel:
+    mode = "claude"
+
     def __init__(self, api_key: str, model: str, *, timeout: float = 45.0) -> None:
         self._client = anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=2)
         self.model = model

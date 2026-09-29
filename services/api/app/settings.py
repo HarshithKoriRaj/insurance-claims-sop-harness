@@ -1,5 +1,5 @@
-"""Runtime settings, read once from environment variables. The model API key is read
-here and nowhere else, and is never logged or returned by the API."""
+"""Runtime settings, read once from environment variables. Model API keys are read
+here and nowhere else, and are never logged or returned by the API."""
 
 from __future__ import annotations
 
@@ -9,13 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
+DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
+PROVIDERS = ("anthropic", "openai", "offline")
 
 
 @dataclass(frozen=True)
 class Settings:
+    provider: str
     anthropic_api_key: str | None
-    model: str
+    anthropic_model: str
+    openai_api_key: str | None
+    openai_model: str
     app_mode: str
     business_date_override: str | None
     database_path: Path
@@ -26,10 +31,29 @@ class Settings:
     smtp_port: int
     mail_from: str
 
+    @property
+    def model(self) -> str:
+        return {"anthropic": self.anthropic_model, "openai": self.openai_model}.get(self.provider, "rules")
+
     def __repr__(self) -> str:
-        # Keep the key out of tracebacks and logs.
-        key = "set" if self.anthropic_api_key else "missing"
-        return f"Settings(model={self.model!r}, app_mode={self.app_mode!r}, api_key={key})"
+        # Keep the keys out of tracebacks and logs.
+        return f"Settings(provider={self.provider!r}, model={self.model!r}, app_mode={self.app_mode!r})"
+
+
+def _provider(env: Mapping[str, str]) -> str:
+    chosen = (env.get("LLM_PROVIDER") or "").strip().lower()
+    if chosen:
+        if chosen not in PROVIDERS:
+            raise ValueError(f"LLM_PROVIDER must be one of {', '.join(PROVIDERS)}")
+        key = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(chosen)
+        if key and not env.get(key):
+            raise ValueError(f"LLM_PROVIDER={chosen} needs {key}")
+        return chosen
+    if env.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    if env.get("OPENAI_API_KEY"):
+        return "openai"
+    return "offline"
 
 
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
@@ -37,8 +61,11 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         return Path(env.get(name) or default)
 
     return Settings(
+        provider=_provider(env),
         anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
-        model=env.get("ANTHROPIC_MODEL") or DEFAULT_MODEL,
+        anthropic_model=env.get("ANTHROPIC_MODEL") or DEFAULT_ANTHROPIC_MODEL,
+        openai_api_key=env.get("OPENAI_API_KEY") or None,
+        openai_model=env.get("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL,
         app_mode=env.get("APP_MODE") or "demo",
         # An empty value means unset, so a blank line in .env never becomes an override.
         business_date_override=env.get("BUSINESS_DATE_OVERRIDE") or None,

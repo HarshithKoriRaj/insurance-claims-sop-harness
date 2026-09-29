@@ -8,12 +8,11 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Protocol
 
 from app.claims.guidance import GuidanceLibrary
 from app.contracts.fixtures import Policyholder
-from app.conversation.claude import ClaudeModel
-from app.conversation.interpretation import Interpretation, rule_interpret
+from app.conversation.interpretation import IdentityMention, Interpretation, rule_interpret
 from app.conversation.templates import template_reply
 from app.workflow.engine import Brief
 from app.workflow.state import SessionState
@@ -37,7 +36,7 @@ SITUATION_GUIDE = {
     "ask_what_help": "Confirm they are verified if notes contain just_verified. List their claims (candidates) briefly and ask what they need help with.",
     "choose_case": "Confirm verification if just_verified. List the candidate claims and ask which one they mean.",
     "no_matching_case": "Confirm verification if just_verified. Say no claim on the account matches that description; list their claims if any.",
-    "answer": "Confirm verification if just_verified. Answer the caller's question about the claim using only facts and guidance. Mention the appeal deadline relative to business_date when relevant. End by asking if they need anything else.",
+    "answer": "Confirm verification if just_verified. Name the claim by its case_id (for example 'claim CL-2048') so the caller knows which one you mean. Answer the caller's question using only facts and guidance: if case_selected is in notes, give the status, the reason, the documents needed and the appeal deadline (days remaining from business_date); otherwise answer just the follow-up question. End by asking if they need anything else.",
     "summary_offer": "Offer to email the summary shown in the chat to the masked recipient; they can choose Send summary or Skip.",
     "summary_offer_repeat": "Ask again whether to send or skip the summary email.",
     "summary_sent": "Confirm the summary was sent to the masked recipient and close warmly.",
@@ -47,14 +46,60 @@ SITUATION_GUIDE = {
 _UNVERIFIED_LEAK = re.compile(r"\bCL-?\s?[0-9]{3,}|\$\s?[0-9]", re.IGNORECASE)
 
 
+_MONTH_WORDS = (
+    ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"), ("may",), ("june", "jun"),
+    ("july", "jul"), ("august", "aug"), ("september", "sep", "sept"), ("october", "oct"),
+    ("november", "nov"), ("december", "dec"),
+)
+
+
+def _alnum(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value.casefold())
+
+
+def grounded(interp: Interpretation, text: str, offer_active: bool) -> Interpretation:
+    """The model proposes; the caller's own words decide. Identity values and specific claim
+    hints the message does not actually contain are dropped (a model filling in a year or
+    "completing" an email must not change what gets verified or which claim is chosen). For a
+    dropped identity field, the deterministic rule reading of the message is used instead."""
+    haystack = _alnum(text)
+    lowered = text.casefold()
+    rules = rule_interpret(text, summary_offer_active=offer_active)
+    identity = {}
+    for field in ("full_name", "dob", "phone", "email", "ssn_last4"):
+        value = getattr(interp.identity, field)
+        if value and _alnum(value) and _alnum(value) in haystack:
+            identity[field] = value
+        elif getattr(rules.identity, field):
+            identity[field] = getattr(rules.identity, field)
+    hints = interp.case_hints.model_copy()
+    if hints.year is not None and str(hints.year) not in text:
+        hints.year = None
+    if hints.case_id and not re.search(rf"\b{re.escape(re.sub(r'[^0-9]', '', hints.case_id))}\b", text):
+        hints.case_id = None
+    if hints.month is not None and not re.search(
+        r"\b(" + "|".join(_MONTH_WORDS[hints.month - 1]) + r")\b", lowered
+    ):
+        hints.month = None
+    return interp.model_copy(update={"identity": IdentityMention(**identity), "case_hints": hints})
+
+
+class ConversationModel(Protocol):
+    mode: str
+
+    def interpret(self, context: dict[str, Any], text: str) -> Interpretation: ...
+
+    def respond(self, brief: dict[str, Any], history: list[dict[str, str]]) -> str: ...
+
+
 class ConversationService:
-    def __init__(self, model: ClaudeModel | None, library: GuidanceLibrary) -> None:
+    def __init__(self, model: ConversationModel | None, library: GuidanceLibrary) -> None:
         self.model = model
         self.library = library
 
     @property
     def mode(self) -> str:
-        return "claude" if self.model else "offline"
+        return self.model.mode if self.model else "offline"
 
     def interpret(self, state: SessionState, text: str) -> Interpretation:
         offer_active = state.phase == "POST_PROCESS" and state.summary.status == "offered"
@@ -69,7 +114,7 @@ class ConversationService:
                 "followup_topics": {topic: list(self.library.topic_examples(topic)) for topic in self.library.topics},
             }
             try:
-                return self.model.interpret(context, text)
+                return grounded(self.model.interpret(context, text), text, offer_active)
             except Exception as error:  # the rule interpreter keeps the demo running
                 log.warning("model interpretation failed (%s); using rules", type(error).__name__)
         return rule_interpret(text, summary_offer_active=offer_active)
