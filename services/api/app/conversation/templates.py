@@ -125,6 +125,11 @@ def template_reply(brief: dict[str, Any]) -> str:
 
 def _answer(brief: dict[str, Any], name: str | None) -> str:
     facts = brief["facts"]
+    followups = [g["text"] for g in brief.get("guidance", []) if g["topic"].startswith("followup:")]
+    if "case_selected" not in brief.get("notes", []) and followups:
+        # A follow-up question on the same claim: answer it without restating everything.
+        answer = followups[0] if followups[0].startswith("For claim") else f"For claim {facts['case_id']}: {followups[0]}"
+        return f"{answer} Is there anything else I can help with?"
     lead = f"Thanks{', ' + name if name else ''}, you're verified. " if "just_verified" in brief.get("notes", []) else ""
     lines = [f"{lead}Claim {facts['case_id']} ({facts['case_type']}), filed {facts['filed']}, is {facts['status']}."]
     if "denial_reason" in facts:
@@ -138,7 +143,6 @@ def _answer(brief: dict[str, Any], name: str | None) -> str:
             lines.append(
                 f"The appeal deadline is {facts['appeal_deadline']}, {facts['days_until_appeal_deadline']} days from today ({facts['business_date']})."
             )
-    followups = [g["text"] for g in brief.get("guidance", []) if g["topic"].startswith("followup:")]
     if followups:
         lines.append(followups[0])
     lines.append("Is there anything else about this claim I can help with?")

@@ -224,7 +224,11 @@ def rule_interpret(text: str, *, summary_offer_active: bool = False) -> Interpre
             decision = "send"
         elif re.search(r"^\s*(no|nope|skip|don't|do not|no thanks)\b", lowered):
             decision = "skip"
-    done = bool(re.search(r"that's all|that is all|nothing else|no more questions|i'm done|that's it|\bbye\b|goodbye", lowered))
+    done = bool(re.search(
+        r"that's all|that is all|that's everything|that is everything|that'll be all|nothing else|nothing more|"
+        r"no more questions|no further questions|i'm done|we're done|all set|that's it|\bbye\b|goodbye",
+        lowered,
+    ))
 
     has_identity = bool(identity.present())
     in_scope = has_identity or hints or intent or decision or done or _IN_SCOPE.search(text)
