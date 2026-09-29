@@ -128,6 +128,10 @@ def normalize_dob(raw: str) -> Normalized:
             return _problem(Problem.AMBIGUOUS, tuple(sorted(r.isoformat() for r in readings)))
         return Normalized(readings.pop().isoformat())
 
+    # The token path below keeps only ASCII runs, so any other letter, digit, or mark is
+    # refused first: "March 1٥ 1985" must not quietly become March 1.
+    if any(not ch.isascii() and (ch.isalnum() or unicodedata.category(ch)[0] == "M") for ch in text):
+        return _problem(Problem.INVALID)
     tokens = [t for t in re.findall(r"[a-z]+|[0-9]+", text) if t not in _DATE_FILLER]
     months = [t for t in tokens if t in _MONTHS]
     numbers = [t for t in tokens if t.isdigit()]
@@ -145,26 +149,40 @@ def normalize_dob(raw: str) -> Normalized:
 
 _PHONE_CHARACTERS = re.compile(r"[0-9\s()+.\-]+")
 _E164_DIGITS = re.compile(r"[1-9][0-9]{7,14}")
+_TRUNK_ZERO = re.compile(r"\(\s*0\s*\)")
 
 
 def normalize_phone(raw: str, *, default_country_code: str, national_length: int) -> Normalized:
     """Returns E.164. The default country code applies only to national-length numbers;
-    anything else without an explicit country code is not guessed."""
+    anything else without an explicit country code is not guessed. A number that looks
+    mistyped comes back AMBIGUOUS, so the caller is asked again instead of failing a match."""
     if has_invisible_characters(raw):
         return _problem(Problem.CONTROL_CHARACTERS)
     text = unicodedata.normalize("NFKC", raw).strip()
     if not _PHONE_CHARACTERS.fullmatch(text) or "+" in text[1:]:
         return _problem(Problem.INVALID)
     digits = re.sub(r"[^0-9]", "", text)
+    if not digits:
+        return _problem(Problem.INVALID)
     if text.startswith("+"):
+        if _TRUNK_ZERO.search(text):
+            # "+44 (0) 20 ..." mixes the international and national forms.
+            return _problem(Problem.AMBIGUOUS)
         return Normalized(f"+{digits}") if _E164_DIGITS.fullmatch(digits) else _problem(Problem.INVALID)
-    if len(digits) == national_length:
-        return Normalized(f"+{default_country_code}{digits}")
-    if len(digits) == len(default_country_code) + national_length and digits.startswith(default_country_code):
-        return Normalized(f"+{digits}")
-    if len(digits) < national_length:
+    country = default_country_code
+    if len(digits) == len(country) + national_length and digits.startswith(country):
+        national = digits[len(country) :]
+    elif len(digits) == national_length:
+        national = digits
+    elif len(digits) < national_length:
         return _problem(Problem.INCOMPLETE)
-    return _problem(Problem.AMBIGUOUS)
+    else:
+        return _problem(Problem.AMBIGUOUS)
+    # A national number never starts with a trunk 0, and one that starts with the country
+    # code has probably lost or gained a digit.
+    if national.startswith(("0", country)):
+        return _problem(Problem.AMBIGUOUS)
+    return Normalized(f"+{country}{national}")
 
 
 def normalize_email(raw: str) -> Normalized:
