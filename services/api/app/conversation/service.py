@@ -44,7 +44,7 @@ SITUATION_GUIDE = {
     "summary_skipped": "Confirm no summary will be sent and close warmly.",
     "summary_send_failed": "Say the summary could not be sent and nothing was sent; they can retry or skip.",
 }
-_UNVERIFIED_LEAK = re.compile(r"\bCL-?\s?[0-9]{3,}|\$\s?[0-9]")
+_UNVERIFIED_LEAK = re.compile(r"\bCL-?\s?[0-9]{3,}|\$\s?[0-9]", re.IGNORECASE)
 
 
 class ConversationService:

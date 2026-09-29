@@ -174,12 +174,13 @@ def test_idle_verification_expires_and_hides_earlier_claim_details(chat, runtime
     later = runtime.clock.now() + timedelta(minutes=31)
     runtime.clock = type("Later", (), {"now": lambda self: later, "business_date": runtime.clock.business_date})()
     runtime.engine.clock = runtime.clock
-    chat.say("what's next?")
+    chat.say("hello, are you still there?")
     view = chat.view
     assert view["phase"] == "VERIFY_ID" and view["verification"]["verified"] is False
     assert "CL-2048" not in chat.transcript
     assert "expired" in chat.last_reply
     assert view["memory"]["case_hints"]["case_id"] is None and view["selected_case"] is None
+    assert view["memory"]["intent"] is None
 
 
 def test_ending_after_a_claim_discussion_offers_the_summary(chat):

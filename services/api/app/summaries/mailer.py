@@ -1,6 +1,7 @@
-"""Sends an approved summary at most once per summary ID. With SMTP configured (Mailpit
-in the Docker demo) the message goes to that server; either way it is recorded in the
-outbox table, which is what makes a retry a no-op."""
+"""Sends an approved summary at most once per summary ID, even when two requests race
+(a double click, two tabs, a client retry). The summary ID is reserved in the outbox
+table atomically before anything is sent; whoever loses the race sends nothing. If the
+send fails, the reservation is released so a later retry can send it."""
 
 from __future__ import annotations
 
@@ -25,27 +26,35 @@ class SmtpMailer:
                 " subject TEXT NOT NULL, body TEXT NOT NULL, sent_at TEXT NOT NULL)"
             )
 
-    def already_sent(self, summary_id: str) -> bool:
+    def _reserve(self, summary_id: str, to: str, subject: str, body: str) -> bool:
         with self._lock:
-            return self._db.execute("SELECT 1 FROM outbox WHERE summary_id = ?", (summary_id,)).fetchone() is not None
-
-    def send(self, summary_id: str, to: str, subject: str, body: str) -> None:
-        if self.already_sent(summary_id):
-            return
-        if self._host:
-            message = EmailMessage()
-            message["From"] = self._from
-            message["To"] = to
-            message["Subject"] = subject
-            message["Message-ID"] = f"<{summary_id}@claims-assistant.local>"
-            message.set_content(body)
-            with smtplib.SMTP(self._host, self._port, timeout=10) as smtp:
-                smtp.send_message(message)
-        with self._lock:
-            self._db.execute(
+            cursor = self._db.execute(
                 "INSERT OR IGNORE INTO outbox (summary_id, recipient, subject, body, sent_at) VALUES (?, ?, ?, ?, ?)",
                 (summary_id, to, subject, body, datetime.now(UTC).isoformat()),
             )
+            return cursor.rowcount == 1
+
+    def _release(self, summary_id: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM outbox WHERE summary_id = ?", (summary_id,))
+
+    def send(self, summary_id: str, to: str, subject: str, body: str) -> None:
+        if not self._reserve(summary_id, to, subject, body):
+            return  # already sent, or being sent by a concurrent request
+        if not self._host:
+            return  # no SMTP server configured: the outbox row is the record
+        message = EmailMessage()
+        message["From"] = self._from
+        message["To"] = to
+        message["Subject"] = subject
+        message["Message-ID"] = f"<{summary_id}@claims-assistant.local>"
+        message.set_content(body)
+        try:
+            with smtplib.SMTP(self._host, self._port, timeout=10) as smtp:
+                smtp.send_message(message)
+        except Exception:
+            self._release(summary_id)
+            raise
 
     def sent_count(self) -> int:
         with self._lock:

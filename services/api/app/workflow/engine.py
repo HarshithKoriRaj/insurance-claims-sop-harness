@@ -138,6 +138,8 @@ class WorkflowEngine:
             state.selected_case_id = None
             state.candidate_case_ids = []
             state.case_hints = CaseHints()
+            state.intent = None
+            state.followup_topic = None
             state.discussed = []
             state.summary = SummaryState()
             state.phase = "VERIFY_ID"
