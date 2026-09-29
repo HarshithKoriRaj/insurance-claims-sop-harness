@@ -1817,12 +1817,17 @@ git commit -m "feat: format USD and compute appeal-deadline status"
 `tests/unit/test_guidance.py`:
 
 ```python
+import json
+from urllib.parse import unquote
+
 import pytest
 
 from app.claims.guidance import (
+    SOURCE,
     GuidanceLibrary,
     GuidanceRenderError,
     UnknownTopic,
+    _source,
     natural_list,
     render_template,
 )
@@ -1831,6 +1836,28 @@ from app.claims.guidance import (
 @pytest.fixture(scope="module")
 def library(store, catalog):
     return GuidanceLibrary(store.guideline, catalog)
+
+
+@pytest.fixture(scope="module")
+def raw_guideline(fixtures_dir):
+    return json.loads((fixtures_dir / SOURCE).read_text(encoding="utf-8"))
+
+
+def _resolve(source, document):
+    """Follows a snippet's source back into the raw fixture JSON."""
+    file, _, fragment = source.partition("#")
+    assert file == SOURCE
+    node = document
+    for token in fragment.removeprefix("/").split("/"):
+        token = unquote(token).replace("~1", "/").replace("~0", "~")
+        node = node[int(token)] if isinstance(node, list) else node[token]
+    return node
+
+
+def _with_rule(guideline, index, **changes):
+    rules = list(guideline.claim_followup_guidance)
+    rules[index] = rules[index].model_copy(update=changes)
+    return guideline.model_copy(update={"claim_followup_guidance": tuple(rules)})
 
 
 def test_denied_claim_gets_general_case_type_and_document_guidance(library, store):
@@ -1849,6 +1876,38 @@ def test_alternatives_are_document_specific_or_default(library):
     assert library.alternatives("pathology report").topic == "alternative:PATHOLOGY_REPORT"
     assert library.alternatives("office note").topic == "alternative:PROVIDER_OFFICE_NOTE"
     assert library.alternatives("diagnosis report").topic == "alternative:default"
+
+
+def test_every_snippet_points_at_its_own_text(library, store, catalog, raw_guideline):
+    labels = list(catalog.label_to_code)
+    snippets = [
+        *(s for case_type in store.guideline.case_type_guidance for s in library.for_documents(case_type, labels)),
+        *(library.alternatives(label) for label in labels),
+        library.human_review_rule(),
+        library.fallback(),
+    ]
+    for snippet in snippets:
+        assert _resolve(snippet.source, raw_guideline) == snippet.text, snippet.topic
+
+
+def test_every_followup_points_at_its_own_template(library, store, raw_guideline):
+    claim = store.claim("CL-2048")
+    settings = raw_guideline["claim_followup_settings"]
+    values = {
+        "case_id": claim.case_id,
+        "documents": natural_list(claim.documents_needed),
+        "average_processing_time_after_submission": settings["average_processing_time_after_submission"]["en"],
+    }
+    for topic in library.topics:
+        snippet = library.followup(claim, topic)
+        assert _resolve(snippet.source.removesuffix("/en"), raw_guideline)["topic"] == topic
+        assert render_template(_resolve(snippet.source, raw_guideline), values) == snippet.text
+
+
+def test_source_escapes_tilde_and_slash_before_percent_encoding():
+    assert _source("a/b~c", "en") == f"{SOURCE}#/a~1b~0c/en"
+    assert _source("~1") == f"{SOURCE}#/~01"
+    assert _source("x ray", 3) == f"{SOURCE}#/x%20ray/3"
 
 
 def test_submission_timing_is_filled_from_the_claim(library, store):
@@ -1870,13 +1929,53 @@ def test_processing_time_comes_from_the_settings(library, store):
     assert "The average processing time is usually less than a week" in text
 
 
+def test_a_document_named_twice_is_requested_once(library, store):
+    claim = store.claim("CL-2048").model_copy(
+        update={"documents_needed": ("pathology report", "original pathology report", "office note")}
+    )
+    text = library.followup(claim, "submission_timing").text
+    assert text == "For claim CL-2048, please submit pathology report and office note within a week."
+
+
 def test_templates_do_not_apply_to_a_claim_without_documents(library, store):
-    assert library.followup(store.claim("CL-2102"), "submission_method") == library.fallback()
+    snippet = library.followup(store.claim("CL-2102"), "submission_method")
+    assert snippet == library.fallback()
+    assert snippet.source.endswith("#/claim_followup_fallback/en")
+
+
+def test_a_rule_that_does_not_need_documents_renders_without_them(store, catalog):
+    library = GuidanceLibrary(_with_rule(store.guideline, 0, requires_documents=False), catalog)
+    text = library.followup(store.claim("CL-2102"), "missing_required_material_alternatives").text
+    assert text.startswith("For claim CL-2102, if the exact requested item is not available")
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"en": "For claim {case_Id}, submit {documents}."}, r"submission_timing\): unknown placeholder \{case_Id\}"),
+        ({"en": "For claim {case_id, submit {documents}."}, r"submission_timing\): template has an unmatched brace"),
+        ({"requires_documents": False}, r"submission_timing\): uses \{documents\} but does not require documents"),
+    ],
+    ids=["unknown-placeholder", "unmatched-brace", "documents-not-required"],
+)
+def test_templates_are_checked_when_the_library_is_built(store, catalog, changes, message):
+    with pytest.raises(GuidanceRenderError, match=message):
+        GuidanceLibrary(_with_rule(store.guideline, 1, **changes), catalog)
+
+
+def test_guidance_keys_that_share_a_document_code_are_rejected(store, catalog):
+    guidance = dict(store.guideline.document_guidance)
+    guidance["pathology report"] = guidance["original pathology report"]
+    guideline = store.guideline.model_copy(update={"document_guidance": guidance})
+    with pytest.raises(ValueError, match="share document code PATHOLOGY_REPORT"):
+        GuidanceLibrary(guideline, catalog)
 
 
 def test_unknown_topic_is_rejected(library, store):
     with pytest.raises(UnknownTopic):
         library.followup(store.claim("CL-2048"), "refund_status")
+    with pytest.raises(UnknownTopic):
+        library.topic_examples("refund_status")
 
 
 def test_match_any_phrases_are_exposed_only_as_examples(library):
@@ -1909,8 +2008,16 @@ def test_sources_are_json_pointers_in_uri_fragment_form(library):
         ("Submit {documents} soon.", {}, r"no value for placeholder \{documents\}"),
         ("Submit {Documents} soon.", {"documents": "a pathology report"}, r"no value for placeholder \{Documents\}"),
         ("Submit {documents soon.", {"documents": "a pathology report"}, "unmatched brace"),
+        ("Submit documents} soon.", {"documents": "a pathology report"}, "unmatched brace"),
     ],
-    ids=["empty-value", "blank-value", "missing-value", "unknown-placeholder", "unmatched-brace"],
+    ids=[
+        "empty-value",
+        "blank-value",
+        "missing-value",
+        "unknown-placeholder",
+        "unmatched-open-brace",
+        "unmatched-close-brace",
+    ],
 )
 def test_rendering_refuses_a_template_it_cannot_fill_completely(template, values, message):
     with pytest.raises(GuidanceRenderError, match=message):
@@ -1935,7 +2042,8 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'app.claims.guidance'`
 
 ```python
 """Approved guidance snippets with provenance, and rendering of the follow-up
-templates. A template renders only when every placeholder has a value."""
+templates. A template renders only when every placeholder has a value, and every
+follow-up template is checked when the library is built."""
 
 from __future__ import annotations
 
@@ -1948,6 +2056,7 @@ from app.claims.documents import DocumentCatalog
 from app.contracts.fixtures import Claim, DocumentGuideline, FollowupRule
 
 SOURCE = "required_document_guideline.json"
+FOLLOWUP_PLACEHOLDERS = frozenset({"case_id", "documents", "average_processing_time_after_submission"})
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 
 
@@ -1973,9 +2082,7 @@ def natural_list(items: Sequence[str]) -> str:
 
 
 def render_template(template: str, values: Mapping[str, str]) -> str:
-    remainder = _PLACEHOLDER.sub("", template)
-    if "{" in remainder or "}" in remainder:
-        raise GuidanceRenderError("template has an unmatched brace")
+    _placeholders(template)
 
     def fill(match: re.Match[str]) -> str:
         value = values.get(match.group(1))
@@ -1994,9 +2101,10 @@ class GuidanceLibrary:
         self._alternative_keys = _keys_by_code(
             {k: v for k, v in guideline.document_alternative_guidance.items() if k != "default"}, catalog
         )
-        self._rules: dict[str, tuple[int, FollowupRule]] = {
-            rule.topic: (index, rule) for index, rule in enumerate(guideline.claim_followup_guidance)
-        }
+        self._rules: dict[str, tuple[int, FollowupRule]] = {}
+        for index, rule in enumerate(guideline.claim_followup_guidance):
+            _check_followup_template(index, rule)
+            self._rules[rule.topic] = (index, rule)
 
     @property
     def topics(self) -> tuple[str, ...]:
@@ -2016,13 +2124,9 @@ class GuidanceLibrary:
                     _source("case_type_guidance", case_type, "en"),
                 )
             )
-        seen: set[str] = set()
-        for label in labels:
-            code = self._catalog.code_for(label)
+        for _, code in _one_label_per_document(labels, self._catalog):
             key = self._document_keys.get(code)
-            # Two labels for one document (an alias and its canonical name) give one snippet.
-            if key is not None and code not in seen:
-                seen.add(code)
+            if key is not None:
                 snippets.append(
                     GuidanceSnippet(
                         f"document:{code}",
@@ -2065,9 +2169,10 @@ class GuidanceLibrary:
         if rule.requires_documents and not claim.documents_needed:
             return self.fallback()
         settings = self._guideline.claim_followup_settings
+        documents = [label for label, _ in _one_label_per_document(claim.documents_needed, self._catalog)]
         values = {
             "case_id": claim.case_id,
-            "documents": natural_list(claim.documents_needed),
+            "documents": natural_list(documents),
             "average_processing_time_after_submission": settings.average_processing_time_after_submission.en,
         }
         return GuidanceSnippet(
@@ -2081,6 +2186,38 @@ class GuidanceLibrary:
             return self._rules[topic]
         except KeyError:
             raise UnknownTopic(topic) from None
+
+
+def _placeholders(template: str) -> frozenset[str]:
+    remainder = _PLACEHOLDER.sub("", template)
+    if "{" in remainder or "}" in remainder:
+        raise GuidanceRenderError("template has an unmatched brace")
+    return frozenset(_PLACEHOLDER.findall(template))
+
+
+def _check_followup_template(index: int, rule: FollowupRule) -> None:
+    where = f"claim_followup_guidance/{index} ({rule.topic})"
+    try:
+        names = _placeholders(rule.en)
+    except GuidanceRenderError as exc:
+        raise GuidanceRenderError(f"{where}: {exc}") from None
+    unknown = sorted(names - FOLLOWUP_PLACEHOLDERS)
+    if unknown:
+        raise GuidanceRenderError(f"{where}: unknown placeholder {{{unknown[0]}}}")
+    if "documents" in names and not rule.requires_documents:
+        raise GuidanceRenderError(f"{where}: uses {{documents}} but does not require documents")
+
+
+def _one_label_per_document(labels: Sequence[str], catalog: DocumentCatalog) -> list[tuple[str, str]]:
+    # The claim's first label for each document code, so a document named twice is asked for once.
+    seen: set[str] = set()
+    kept: list[tuple[str, str]] = []
+    for label in labels:
+        code = catalog.code_for(label)
+        if code not in seen:
+            seen.add(code)
+            kept.append((label, code))
+    return kept
 
 
 def _source(*path: str | int) -> str:
@@ -2103,7 +2240,7 @@ def _keys_by_code(entries: Mapping[str, object], catalog: DocumentCatalog) -> di
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_guidance.py -v`
-Expected: PASS (18 tests)
+Expected: PASS (28 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -2540,10 +2677,12 @@ git commit -m "feat: normalize caller identity values without guessing"
 `tests/unit/test_identity_fields.py`:
 
 ```python
+from datetime import date
+
 import pytest
 
 from app.identity.fields import UnusableRecordValue, field_matches, record_values
-from app.identity.normalize import normalize_email, normalize_name
+from app.identity.normalize import Normalized, normalize, normalize_email, normalize_name
 
 
 def test_ssn_last4_matches_an_ssn_record(store):
@@ -2564,7 +2703,9 @@ def test_name_aliases_and_spacing_variants_match(store):
 
 
 def test_reversed_name_order_does_not_match(store):
-    assert not field_matches(store.policyholder("P12"), "full_name", normalize_name("Tian Ma").value)
+    holder = store.policyholder("P12")
+    assert field_matches(holder, "full_name", normalize_name("Ma Tian").value)
+    assert not field_matches(holder, "full_name", normalize_name("Tian Ma").value)
 
 
 def test_duplicate_phone_alias_is_one_value(store):
@@ -2576,7 +2717,9 @@ def test_email_alias_matches(store):
 
 
 def test_phone_one_digit_off_does_not_match(store):
-    assert not field_matches(store.policyholder("P9"), "phone", "+16505212830")
+    holder = store.policyholder("P9")
+    assert field_matches(holder, "phone", "+16505212836")
+    assert not field_matches(holder, "phone", "+16505212830")
 
 
 def test_dob_matches_the_iso_value(store):
@@ -2589,10 +2732,31 @@ def test_every_stored_identity_value_is_usable(store):
             assert record_values(holder, field), (holder.party_id, field)
 
 
-def test_an_unusable_stored_name_raises_instead_of_being_dropped(store):
-    holder = store.policyholder("P9").model_copy(update={"name_aliases": ("Margaret",)})
-    with pytest.raises(UnusableRecordValue, match="P9: a stored full_name cannot be normalized"):
-        record_values(holder, "full_name")
+def test_stored_phones_are_already_what_a_caller_normalizes_to(store, policy):
+    for holder in store.policyholders:
+        for phone in record_values(holder, "phone"):
+            assert normalize("phone", phone, policy) == Normalized(phone), holder.party_id
+
+
+@pytest.mark.parametrize(
+    ("field", "update", "secret"),
+    [
+        ("full_name", {"name_aliases": ("Margaret",)}, "margaret"),
+        ("email", {"email_aliases": ("margaret.chen",)}, "margaret"),
+        ("dob", {"dob": date(1899, 12, 31)}, "1899"),
+    ],
+    ids=["name", "email", "dob"],
+)
+def test_an_unusable_stored_value_raises_without_echoing_it(store, field, update, secret):
+    holder = store.policyholder("P9").model_copy(update=update)
+    with pytest.raises(UnusableRecordValue, match=f"P9: a stored {field} cannot be normalized") as caught:
+        record_values(holder, field)
+    assert secret not in str(caught.value).casefold()
+
+
+def test_an_unknown_field_is_refused(store):
+    with pytest.raises(ValueError, match="unknown identity field 'policy_number'"):
+        record_values(store.policyholder("P9"), "policy_number")
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -2613,7 +2777,7 @@ silently dropped."""
 from __future__ import annotations
 
 from app.contracts.fixtures import Policyholder
-from app.identity.normalize import Normalized, normalize_email, normalize_name
+from app.identity.normalize import Normalized, normalize_dob, normalize_email, normalize_name
 from app.policies import IdentityField
 
 
@@ -2635,7 +2799,9 @@ def record_values(record: Policyholder, field: IdentityField) -> frozenset[str]:
             names = (record.name, *record.name_aliases)
             return frozenset(_usable(normalize_name(name), record, field) for name in names)
         case "dob":
-            return frozenset({record.dob.isoformat()})
+            # Through the caller-side normalizer, so a stored date no caller could ever
+            # produce (outside 1900-2100) raises instead of silently never matching.
+            return frozenset({_usable(normalize_dob(record.dob.isoformat()), record, field)})
         case "phone":
             return frozenset((record.phone, *record.phone_aliases))
         case "email":
@@ -2653,7 +2819,7 @@ def field_matches(record: Policyholder, field: IdentityField, normalized_value: 
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_identity_fields.py -v`
-Expected: PASS (11 tests)
+Expected: PASS (15 tests)
 
 - [ ] **Step 5: Commit**
 
