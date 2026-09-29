@@ -39,7 +39,7 @@ SITUATION_GUIDE = {
     "answer": "Confirm verification if just_verified. Name the claim by its case_id (for example 'claim CL-2048') so the caller knows which one you mean. Answer the caller's question using only facts and guidance: if case_selected is in notes, give the status, the reason, the documents needed and the appeal deadline (days remaining from business_date); otherwise answer just the follow-up question. End by asking if they need anything else.",
     "summary_offer": "Offer to email the summary shown in the chat to the masked recipient; they can choose Send summary or Skip.",
     "summary_offer_repeat": "Ask again whether to send or skip the summary email.",
-    "summary_sent": "Confirm the summary was sent to the masked recipient and close warmly.",
+    "summary_sent": "Confirm the summary was sent to the masked recipient and close warmly. If notes contain no_mail_server, say instead that it was recorded but not delivered to an inbox because this demo deployment has no mail server.",
     "summary_skipped": "Confirm no summary will be sent and close warmly.",
     "summary_send_failed": "Say the summary could not be sent and nothing was sent; they can retry or skip.",
 }

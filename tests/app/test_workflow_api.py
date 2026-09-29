@@ -195,3 +195,22 @@ def test_ending_after_a_claim_discussion_offers_the_summary(chat):
 
 def test_health_reports_offline_mode_without_a_key(client):
     assert client.get("/api/health").json()["model_mode"] == "offline"
+
+
+def test_without_a_mail_server_the_summary_is_recorded_not_claimed_as_emailed(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from app.runtime import build_runtime
+    from app.settings import load_settings
+
+    settings = load_settings({"DATABASE_PATH": str(tmp_path / "s.sqlite3"), "WEB_DIST_DIR": str(tmp_path / "none")})
+    client = TestClient(create_app(build_runtime(settings)))
+    created = client.post("/api/sessions").json()
+    headers = {"Authorization": f"Bearer {created['token']}"}
+    path = f"/api/sessions/{created['session_id']}"
+    client.post(f"{path}/messages", json={"text": MARGARET}, headers=headers)
+    client.post(f"{path}/messages", json={"text": "that's all"}, headers=headers)
+    view = client.post(f"{path}/actions", json={"action": "send_summary"}, headers=headers).json()["view"]
+    assert view["summary"]["status"] == "sent" and view["summary"]["delivered"] is False
+    assert "wasn't delivered" in view["messages"][-1]["text"]

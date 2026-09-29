@@ -113,7 +113,10 @@ def template_reply(brief: dict[str, Any]) -> str:
             "You can review it above and choose Send summary or Skip."
         )
     elif situation == "summary_sent":
-        parts.append(f"Done: the summary was sent to {brief['summary']['recipient']}. Thanks for contacting us.")
+        if "no_mail_server" in notes:
+            parts.append("Done: the summary was recorded. This demo deployment has no mail server, so it wasn't delivered to an inbox. Thanks for contacting us.")
+        else:
+            parts.append(f"Done: the summary was sent to {brief['summary']['recipient']}. Thanks for contacting us.")
     elif situation == "summary_skipped":
         parts.append("No problem, I won't send a summary. Thanks for contacting us.")
     elif situation == "summary_send_failed":

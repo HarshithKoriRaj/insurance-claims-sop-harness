@@ -86,6 +86,7 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
                 "subject": state.summary.subject if show_summary else None,
                 "body": state.summary.body if show_summary else None,
                 "recipient": mask_email(holder.email) if holder and show_summary else None,
+                "delivered": state.summary.status == "sent" and bool(getattr(rt.mailer, "delivers", True)),
             },
             "available_actions": rt.engine.available_actions(state),
             "business_date": rt.clock.business_date().isoformat(),

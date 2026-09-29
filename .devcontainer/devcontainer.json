@@ -1,0 +1,21 @@
+{
+  "name": "Claims Assistant",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "secrets": {
+    "OPENAI_API_KEY": {
+      "description": "OpenAI API key. Optional: without a key the app runs in rule-based offline mode."
+    },
+    "ANTHROPIC_API_KEY": {
+      "description": "Anthropic API key, as an alternative to OpenAI. Optional."
+    }
+  },
+  "forwardPorts": [8000, 8025],
+  "portsAttributes": {
+    "8000": { "label": "Chat UI", "onAutoForward": "openBrowser" },
+    "8025": { "label": "Email inbox (Mailpit)", "onAutoForward": "silent" }
+  },
+  "postStartCommand": "docker compose up -d --build"
+}

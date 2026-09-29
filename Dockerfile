@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# 1. Build the React chat UI.
-FROM node:22-alpine AS web
+# 1. Build the React chat UI. The output is plain static files, so it is built once on the
+#    builder's own platform even when the final image targets several.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /web
 COPY apps/web/package.json apps/web/package-lock.json ./
 RUN npm ci

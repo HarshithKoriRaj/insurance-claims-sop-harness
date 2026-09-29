@@ -11,6 +11,24 @@ A chat agent for insurance claims support that follows a standard operating proc
 
 The permitted identity fields are full name, date of birth, phone, email, and the last 4 digits of the SSN. A policy number is not an identity field.
 
+## Run it from GitHub
+
+**Option 1: prebuilt Docker image, nothing to clone.** The image is built by GitHub Actions on every push to `main`, for Intel and Apple Silicon.
+
+```bash
+docker run --rm -p 8000:8000 -e OPENAI_API_KEY=sk-... ghcr.io/harshithkoriraj/insurance-claims-sop-harness:latest
+```
+
+Open http://localhost:8000. This single container has no mail server, so an approved summary is recorded and the UI says it wasn't delivered. Use Option 3 to see it arrive in an inbox.
+
+**Option 2: GitHub Codespaces, in the browser with no install.**
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/HarshithKoriRaj/insurance-claims-sop-harness)
+
+Add `OPENAI_API_KEY` when Codespaces asks for secrets. It's optional; without it the app runs in offline mode. The app and the Mailpit inbox start automatically on ports 8000 and 8025.
+
+**Option 3: clone and run Docker Compose**, which includes the Mailpit inbox. See the Quick start below.
+
 ## Quick start (Docker)
 
 ```bash

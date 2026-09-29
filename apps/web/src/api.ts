@@ -64,6 +64,7 @@ export interface SessionView {
     subject: string | null
     body: string | null
     recipient: string | null
+    delivered: boolean
   }
   available_actions: ActionType[]
   business_date: string

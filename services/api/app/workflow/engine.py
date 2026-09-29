@@ -346,7 +346,8 @@ class WorkflowEngine:
             return Brief("summary_send_failed", summary=self._summary_view(state))
         state.summary.status = "sent"
         state.lifecycle = "CLOSED"
-        return Brief("summary_sent", summary=self._summary_view(state))
+        notes = [] if getattr(self.mailer, "delivers", True) else ["no_mail_server"]
+        return Brief("summary_sent", summary=self._summary_view(state), notes=notes)
 
     def _skip_summary(self, state: SessionState) -> Brief:
         state.summary.status = "skipped"

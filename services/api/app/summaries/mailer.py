@@ -38,6 +38,10 @@ class SmtpMailer:
         with self._lock:
             self._db.execute("DELETE FROM outbox WHERE summary_id = ?", (summary_id,))
 
+    @property
+    def delivers(self) -> bool:
+        return bool(self._host)
+
     def send(self, summary_id: str, to: str, subject: str, body: str) -> None:
         if not self._reserve(summary_id, to, subject, body):
             return  # already sent, or being sent by a concurrent request

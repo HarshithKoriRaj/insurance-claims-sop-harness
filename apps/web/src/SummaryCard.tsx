@@ -44,7 +44,9 @@ export default function SummaryCard({ summary, pending, onSendSummary, onSkipSum
 
       {summary.status === 'sent' && (
         <p className="summary-card__status">
-          Summary emailed to {summary.recipient ?? 'the policyholder'}.
+          {summary.delivered
+            ? `Summary emailed to ${summary.recipient ?? 'the policyholder'}.`
+            : 'Summary recorded. This deployment has no mail server, so it was not delivered to an inbox.'}
         </p>
       )}
 
