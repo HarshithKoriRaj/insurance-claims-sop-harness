@@ -6,7 +6,7 @@ silently dropped."""
 from __future__ import annotations
 
 from app.contracts.fixtures import Policyholder
-from app.identity.normalize import Normalized, normalize_email, normalize_name
+from app.identity.normalize import Normalized, normalize_dob, normalize_email, normalize_name
 from app.policies import IdentityField
 
 
@@ -28,7 +28,9 @@ def record_values(record: Policyholder, field: IdentityField) -> frozenset[str]:
             names = (record.name, *record.name_aliases)
             return frozenset(_usable(normalize_name(name), record, field) for name in names)
         case "dob":
-            return frozenset({record.dob.isoformat()})
+            # Through the caller-side normalizer, so a stored date no caller could ever
+            # produce (outside 1900-2100) raises instead of silently never matching.
+            return frozenset({_usable(normalize_dob(record.dob.isoformat()), record, field)})
         case "phone":
             return frozenset((record.phone, *record.phone_aliases))
         case "email":

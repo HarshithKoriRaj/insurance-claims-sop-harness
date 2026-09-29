@@ -1,7 +1,9 @@
+from datetime import date
+
 import pytest
 
 from app.identity.fields import UnusableRecordValue, field_matches, record_values
-from app.identity.normalize import normalize_email, normalize_name
+from app.identity.normalize import Normalized, normalize, normalize_email, normalize_name
 
 
 def test_ssn_last4_matches_an_ssn_record(store):
@@ -22,7 +24,9 @@ def test_name_aliases_and_spacing_variants_match(store):
 
 
 def test_reversed_name_order_does_not_match(store):
-    assert not field_matches(store.policyholder("P12"), "full_name", normalize_name("Tian Ma").value)
+    holder = store.policyholder("P12")
+    assert field_matches(holder, "full_name", normalize_name("Ma Tian").value)
+    assert not field_matches(holder, "full_name", normalize_name("Tian Ma").value)
 
 
 def test_duplicate_phone_alias_is_one_value(store):
@@ -34,7 +38,9 @@ def test_email_alias_matches(store):
 
 
 def test_phone_one_digit_off_does_not_match(store):
-    assert not field_matches(store.policyholder("P9"), "phone", "+16505212830")
+    holder = store.policyholder("P9")
+    assert field_matches(holder, "phone", "+16505212836")
+    assert not field_matches(holder, "phone", "+16505212830")
 
 
 def test_dob_matches_the_iso_value(store):
@@ -47,7 +53,28 @@ def test_every_stored_identity_value_is_usable(store):
             assert record_values(holder, field), (holder.party_id, field)
 
 
-def test_an_unusable_stored_name_raises_instead_of_being_dropped(store):
-    holder = store.policyholder("P9").model_copy(update={"name_aliases": ("Margaret",)})
-    with pytest.raises(UnusableRecordValue, match="P9: a stored full_name cannot be normalized"):
-        record_values(holder, "full_name")
+def test_stored_phones_are_already_what_a_caller_normalizes_to(store, policy):
+    for holder in store.policyholders:
+        for phone in record_values(holder, "phone"):
+            assert normalize("phone", phone, policy) == Normalized(phone), holder.party_id
+
+
+@pytest.mark.parametrize(
+    ("field", "update", "secret"),
+    [
+        ("full_name", {"name_aliases": ("Margaret",)}, "margaret"),
+        ("email", {"email_aliases": ("margaret.chen",)}, "margaret"),
+        ("dob", {"dob": date(1899, 12, 31)}, "1899"),
+    ],
+    ids=["name", "email", "dob"],
+)
+def test_an_unusable_stored_value_raises_without_echoing_it(store, field, update, secret):
+    holder = store.policyholder("P9").model_copy(update=update)
+    with pytest.raises(UnusableRecordValue, match=f"P9: a stored {field} cannot be normalized") as caught:
+        record_values(holder, field)
+    assert secret not in str(caught.value).casefold()
+
+
+def test_an_unknown_field_is_refused(store):
+    with pytest.raises(ValueError, match="unknown identity field 'policy_number'"):
+        record_values(store.policyholder("P9"), "policy_number")
