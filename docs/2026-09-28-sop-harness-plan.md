@@ -334,6 +334,8 @@ Code review of Milestone 1 found these constraints on later milestones. Each nee
 | `build_clock` rejects a demo override in production, but only when it is called. | 2 | Call it at startup, so a bad business-date setting fails at boot. Decide whether an empty override variable means unset. |
 | The API package lives in `services/api`. | 6 | Run the server with `--app-dir services/api` or `PYTHONPATH`. Docker and CI install with `uv sync --locked`. |
 | Follow-up templates assume a plural document list: "If diagnosis report are incomplete…". | 4 | The agent never rewrites approved text. Report the wording to the fixture owner instead of patching it in code. |
+| Every policy integer is `StrictInt`, but only three have a test that rejects a quoted or boolean value. | 2 | Add one parametrized test that quotes every integer key in `policies/defaults.toml` and expects rejection. |
+| `read_guidance` accepts both `case_type` and `case_id`. | 3 | In the case-scoped form, take the case type from the claim. If both are passed, reject the call, so a model-supplied case type can never choose the guidance. |
 
 ## Edge-case acceptance matrix
 
