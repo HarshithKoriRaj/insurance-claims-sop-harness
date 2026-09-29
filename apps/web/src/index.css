@@ -277,8 +277,15 @@ button:disabled {
 }
 
 @media (max-width: 480px) {
+  /* Two by two: a column layout would turn each step's 190px flex-basis into its height. */
   .phase-stepper {
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .phase-step {
+    flex: none;
+    padding: 6px 8px;
   }
 }
 
