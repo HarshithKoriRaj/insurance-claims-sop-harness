@@ -137,6 +137,7 @@ class WorkflowEngine:
             state.verified_fields = []
             state.selected_case_id = None
             state.candidate_case_ids = []
+            state.case_hints = CaseHints()
             state.discussed = []
             state.summary = SummaryState()
             state.phase = "VERIFY_ID"
@@ -275,7 +276,6 @@ class WorkflowEngine:
     def _select(self, state: SessionState, claim: Claim, notes: list[str]) -> Brief:
         state.selected_case_id = claim.case_id
         state.candidate_case_ids = []
-        state.case_hints = CaseHints(case_id=claim.case_id)
         state.phase = "PROCESS_CASE"
         return self._answer(state, claim, [*notes, "case_selected"])
 
@@ -289,10 +289,12 @@ class WorkflowEngine:
         if interp.done:
             return self._wrap_up(state)
         if interp.case_hints.any() and not _describes(claim, interp.case_hints):
-            # A different claim mid-case: go back to resolution with the new description.
+            # A different claim mid-case: start resolution again from the new description only,
+            # so hints about the previous claim cannot steer the choice.
             state.selected_case_id = None
             state.phase = "RESOLVE_INTENT"
             state.candidate_case_ids = []
+            state.case_hints = interp.case_hints
             return self._resolve_turn(state, interp, now)
         return self._answer(state, claim, [])
 

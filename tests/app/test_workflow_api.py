@@ -89,6 +89,20 @@ def test_choosing_between_two_january_healthcare_claims(chat):
     assert chat.view["selected_case"]["case_id"] == "CL-2048"
 
 
+def test_switching_to_another_owned_claim_mid_case(chat):
+    chat.say(MARGARET)
+    reply = chat.say("What about my auto claim?")
+    assert chat.view["selected_case"]["case_id"] == "CL-2102"
+    assert "CL-2102" in reply
+
+
+def test_a_broader_question_after_a_selection_asks_which_claim(chat):
+    chat.say(MARGARET)
+    reply = chat.say("Can you show my closed claims?")
+    assert chat.view["phase"] == "RESOLVE_INTENT"
+    assert "CL-2011" in reply and "CL-1899" in reply and chat.view["selected_case"] is None
+
+
 def test_summary_is_sent_only_after_consent_and_only_once(chat, mailer):
     chat.say(MARGARET)
     chat.say("That's all, thanks")
@@ -165,6 +179,7 @@ def test_idle_verification_expires_and_hides_earlier_claim_details(chat, runtime
     assert view["phase"] == "VERIFY_ID" and view["verification"]["verified"] is False
     assert "CL-2048" not in chat.transcript
     assert "expired" in chat.last_reply
+    assert view["memory"]["case_hints"]["case_id"] is None and view["selected_case"] is None
 
 
 def test_ending_after_a_claim_discussion_offers_the_summary(chat):
