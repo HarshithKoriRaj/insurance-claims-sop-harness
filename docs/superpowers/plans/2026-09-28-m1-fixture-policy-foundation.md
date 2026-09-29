@@ -2275,6 +2275,10 @@ from app.identity.normalize import (
 )
 
 
+def _us_phone(raw):
+    return normalize_phone(raw, default_country_code="1", national_length=10)
+
+
 @pytest.mark.parametrize(
     "raw", ["Margaret Chen", "  MARGARET   chen ", "Mrs. Margaret Chen", "margaret-chen", "Ｍａｒｇａｒｅｔ Ｃｈｅｎ"]
 )
@@ -2292,6 +2296,7 @@ def test_name_word_order_is_not_normalized():
 
 def test_first_name_alone_is_incomplete():
     assert normalize_name("Margaret").problem is Problem.INCOMPLETE
+    assert normalize_name("Mrs Chen").problem is Problem.INCOMPLETE
 
 
 def test_combining_marks_stay_in_the_name():
@@ -2301,8 +2306,23 @@ def test_combining_marks_stay_in_the_name():
 
 
 def test_invisible_characters_are_rejected():
-    assert normalize_name("Margaret​ Chen").problem is Problem.CONTROL_CHARACTERS
-    assert normalize_email("margaret@email.com‍").problem is Problem.CONTROL_CHARACTERS
+    assert normalize_name("Margaret\u200b Chen").problem is Problem.CONTROL_CHARACTERS
+    assert normalize_email("margaret@email.com\u200d").problem is Problem.CONTROL_CHARACTERS
+
+
+def test_tabs_and_newlines_are_spacing_but_other_controls_are_rejected():
+    assert normalize_name("Margaret\tChen\r\n") == Normalized("margaretchen")
+    assert normalize_name("Margaret\x00Chen").problem is Problem.CONTROL_CHARACTERS
+    assert normalize_name("Margaret\ue000 Chen").problem is Problem.CONTROL_CHARACTERS
+
+
+@pytest.mark.parametrize(
+    "normalizer",
+    [normalize_dob, _us_phone, normalize_ssn_last4],
+    ids=["dob", "phone", "ssn"],
+)
+def test_every_field_rejects_invisible_characters(normalizer):
+    assert normalizer("1985\u200b").problem is Problem.CONTROL_CHARACTERS
 
 
 @pytest.mark.parametrize(
@@ -2329,20 +2349,44 @@ def test_same_day_and_month_is_not_ambiguous():
         ("March 15, 85", Problem.INCOMPLETE),
         ("1985-02-30", Problem.INVALID),
         ("sometime in 1985", Problem.INVALID),
+        ("Marching 15 1985", Problem.INVALID),
+        ("1899-12-31", Problem.INVALID),
+        ("2101-01-01", Problem.INVALID),
     ],
 )
 def test_unusable_dates_of_birth(raw, problem):
     assert normalize_dob(raw).problem is problem
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "March 1\u0665 1985",
+        "March 1\u06f5, 1985",
+        "March 1\u096bth 1985",
+        "March 1\u041e 1985",
+        "March 2\u039f 1985",
+        "\u0416may 15 1985",
+    ],
+    ids=["arabic-indic-5", "persian-5", "devanagari-5", "cyrillic-o", "greek-omicron", "cyrillic-letter"],
+)
+def test_a_mixed_script_date_is_refused_not_misread(raw):
+    # Dropping the non-ASCII character would turn "March 15" into March 1.
+    assert normalize_dob(raw).problem is Problem.INVALID
+
+
 @pytest.mark.parametrize("raw", ["+1 (650) 521-2836", "650-521-2836", "16505212836", "650.521.2836"])
 def test_us_phone_formats(raw):
-    assert normalize_phone(raw, default_country_code="1", national_length=10) == Normalized("+16505212836")
+    assert _us_phone(raw) == Normalized("+16505212836")
 
 
 def test_explicit_country_code_is_kept():
-    result = normalize_phone("+44 20 7946 0958", default_country_code="1", national_length=10)
-    assert result == Normalized("+442079460958")
+    assert _us_phone("+44 20 7946 0958") == Normalized("+442079460958")
+
+
+def test_explicit_international_numbers_of_8_to_15_digits_are_kept():
+    assert _us_phone("+12345678") == Normalized("+12345678")
+    assert _us_phone("+123456789012345") == Normalized("+123456789012345")
 
 
 @pytest.mark.parametrize(
@@ -2350,12 +2394,21 @@ def test_explicit_country_code_is_kept():
     [
         ("521-2836", Problem.INCOMPLETE),
         ("44 20 7946 0958", Problem.AMBIGUOUS),
+        ("1 650 521 283", Problem.AMBIGUOUS),
+        ("0650521283", Problem.AMBIGUOUS),
+        ("11650521283", Problem.AMBIGUOUS),
+        ("+44 (0) 20 7946 0958", Problem.AMBIGUOUS),
         ("650-CALL-NOW", Problem.INVALID),
         ("+0 650 521 2836", Problem.INVALID),
+        ("+1234567", Problem.INVALID),
+        ("+1234567890123456", Problem.INVALID),
+        ("650+521-2836", Problem.INVALID),
+        ("()", Problem.INVALID),
+        ("-", Problem.INVALID),
     ],
 )
 def test_unusable_phone_numbers_are_not_guessed(raw, problem):
-    assert normalize_phone(raw, default_country_code="1", national_length=10).problem is problem
+    assert _us_phone(raw).problem is problem
 
 
 def test_email_is_trimmed_and_case_folded_but_otherwise_kept():
@@ -2385,7 +2438,7 @@ def test_full_width_characters_are_read_as_ascii(policy):
     [
         (normalize_ssn_last4, "٤٤٧٢"),
         (normalize_dob, "١٩٨٥-٠٣-١٥"),
-        (lambda raw: normalize_phone(raw, default_country_code="1", national_length=10), "٦٥٠٥٢١٢٨٣٦"),
+        (_us_phone, "٦٥٠٥٢١٢٨٣٦"),
     ],
     ids=["ssn", "dob", "phone"],
 )
@@ -2565,6 +2618,10 @@ def normalize_dob(raw: str) -> Normalized:
             return _problem(Problem.AMBIGUOUS, tuple(sorted(r.isoformat() for r in readings)))
         return Normalized(readings.pop().isoformat())
 
+    # The token path below keeps only ASCII runs, so any other letter, digit, or mark is
+    # refused first: "March 1٥ 1985" must not quietly become March 1.
+    if any(not ch.isascii() and (ch.isalnum() or unicodedata.category(ch)[0] == "M") for ch in text):
+        return _problem(Problem.INVALID)
     tokens = [t for t in re.findall(r"[a-z]+|[0-9]+", text) if t not in _DATE_FILLER]
     months = [t for t in tokens if t in _MONTHS]
     numbers = [t for t in tokens if t.isdigit()]
@@ -2582,26 +2639,40 @@ def normalize_dob(raw: str) -> Normalized:
 
 _PHONE_CHARACTERS = re.compile(r"[0-9\s()+.\-]+")
 _E164_DIGITS = re.compile(r"[1-9][0-9]{7,14}")
+_TRUNK_ZERO = re.compile(r"\(\s*0\s*\)")
 
 
 def normalize_phone(raw: str, *, default_country_code: str, national_length: int) -> Normalized:
     """Returns E.164. The default country code applies only to national-length numbers;
-    anything else without an explicit country code is not guessed."""
+    anything else without an explicit country code is not guessed. A number that looks
+    mistyped comes back AMBIGUOUS, so the caller is asked again instead of failing a match."""
     if has_invisible_characters(raw):
         return _problem(Problem.CONTROL_CHARACTERS)
     text = unicodedata.normalize("NFKC", raw).strip()
     if not _PHONE_CHARACTERS.fullmatch(text) or "+" in text[1:]:
         return _problem(Problem.INVALID)
     digits = re.sub(r"[^0-9]", "", text)
+    if not digits:
+        return _problem(Problem.INVALID)
     if text.startswith("+"):
+        if _TRUNK_ZERO.search(text):
+            # "+44 (0) 20 ..." mixes the international and national forms.
+            return _problem(Problem.AMBIGUOUS)
         return Normalized(f"+{digits}") if _E164_DIGITS.fullmatch(digits) else _problem(Problem.INVALID)
-    if len(digits) == national_length:
-        return Normalized(f"+{default_country_code}{digits}")
-    if len(digits) == len(default_country_code) + national_length and digits.startswith(default_country_code):
-        return Normalized(f"+{digits}")
-    if len(digits) < national_length:
+    country = default_country_code
+    if len(digits) == len(country) + national_length and digits.startswith(country):
+        national = digits[len(country) :]
+    elif len(digits) == national_length:
+        national = digits
+    elif len(digits) < national_length:
         return _problem(Problem.INCOMPLETE)
-    return _problem(Problem.AMBIGUOUS)
+    else:
+        return _problem(Problem.AMBIGUOUS)
+    # A national number never starts with a trunk 0, and one that starts with the country
+    # code has probably lost or gained a digit.
+    if national.startswith(("0", country)):
+        return _problem(Problem.AMBIGUOUS)
+    return Normalized(f"+{country}{national}")
 
 
 def normalize_email(raw: str) -> Normalized:
@@ -2656,7 +2727,7 @@ def normalize(field: IdentityField, raw: str, policy: Policy) -> Normalized:
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_normalize.py -v`
-Expected: PASS (47 tests)
+Expected: PASS (70 tests)
 
 - [ ] **Step 5: Commit**
 
