@@ -2,6 +2,8 @@
 
 A chat agent for insurance claims support that follows a standard operating procedure in four phases. An LLM (OpenAI or Claude, whichever key you provide) reads each message and words each reply. Deterministic code decides everything in between: who the caller is, what they may see, and what happens next.
 
+**Live demo:** https://claims-assistant-4wy7.onrender.com. It runs on Render's free plan: the first visit after 15 idle minutes takes about a minute to wake. Click **Try the demo** under the chat box.
+
 | Phase | What happens | Gate to leave it |
 |---|---|---|
 | `VERIFY_ID` | Collects identity details. Discloses nothing about claims. Handles partial answers, refusals, clarifying questions and alternate fields. | 3 distinct permitted fields match exactly one policyholder, and no supplied field contradicts that record |
