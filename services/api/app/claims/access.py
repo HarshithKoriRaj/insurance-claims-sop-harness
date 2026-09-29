@@ -18,8 +18,9 @@ from app.workflow.state import CaseHints
 INTENT_TOPICS = {
     "document_submission": "submission_method",
     "next_steps": "submission_timing",
-    "denial_question": "missing_required_material_alternatives",
+    "denial_question": "submission_timing",
 }
+NEXT_STEP_TOPIC = "submission_timing"
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -83,7 +84,8 @@ class ClaimAccess:
 
     def guidance_for(self, claim: Claim, topic: str | None, intent: str | None) -> list[dict[str, str]]:
         snippets = []
-        chosen = topic or INTENT_TOPICS.get(intent or "")
+        # With documents outstanding, the next step is always worth stating, whatever the intent.
+        chosen = topic or INTENT_TOPICS.get(intent or "") or (NEXT_STEP_TOPIC if claim.documents_needed else None)
         if chosen:
             try:
                 snippets.append(self.guidance.followup(claim, chosen))

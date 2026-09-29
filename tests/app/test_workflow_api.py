@@ -116,6 +116,7 @@ def test_summary_is_sent_only_after_consent_and_only_once(chat, mailer):
     assert len(mailer.sent) == 1
     (to, subject, body), = mailer.sent.values()
     assert to == "margaret@email.com" and "CL-2048" in subject and "Appeal deadline: 2026-03-18" in body
+    assert "Next steps: For claim CL-2048, please submit pathology report and office note within a week." in body
     chat.act("send_summary", expect=409)
     assert len(mailer.sent) == 1
 

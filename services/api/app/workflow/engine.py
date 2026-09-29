@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from app.claims.access import ClaimAccess
+from app.claims.access import NEXT_STEP_TOPIC, ClaimAccess
 from app.claims.importer import FixtureStore
 from app.clock import Clock
 from app.contracts.fixtures import Claim
@@ -378,7 +378,8 @@ class WorkflowEngine:
                     lines.append(
                         f"- Appeal deadline: {facts['appeal_deadline']} ({facts['days_until_appeal_deadline']} days from {business_date.isoformat()})"
                     )
-            steps = [g["text"] for g in self.access.guidance_for(claim, None, state.intent) if g["topic"].startswith("followup:")]
+            topic = NEXT_STEP_TOPIC if claim.documents_needed else None
+            steps = [g["text"] for g in self.access.guidance_for(claim, topic, state.intent) if g["topic"].startswith("followup:")]
             if steps:
                 lines.append("- Next steps: " + " ".join(steps))
         lines += ["", "If anything here looks wrong, reply to this message or contact support.", "", "Claims Assistant"]
