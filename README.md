@@ -84,6 +84,8 @@ Set these in `.env` (see `.env.example`):
 | `LLM_PROVIDER` | (auto) | `openai`, `anthropic` or `offline`. Defaults to whichever key is set |
 | `APP_MODE` | `demo` | `demo` pins the business date to 2026-03-01 so the fixture appeal deadlines are still open. `production` uses the real date and rejects overrides |
 | `BUSINESS_DATE_OVERRIDE` | (empty) | Demo mode only: `YYYY-MM-DD` or `today` |
+| `SESSION_RATE_LIMIT` | `10/600` | New conversations per client per window (count/seconds) |
+| `MESSAGE_RATE_LIMIT` | `30/60` | Messages and actions per client per window |
 
 ## How it works
 
@@ -109,6 +111,7 @@ browser ──► FastAPI ──► ConversationService.interpret ──► LLM 
   - Emotions: acknowledged first.
   - Handoff to a human is requested and clearly labelled as simulated.
 - **Resilience.** If the model is unavailable, interpretation falls back to rules and replies fall back to templates, so the workflow and its gates still work.
+- **Public-demo guards.** Per-client rate limits cap new conversations and messages. That protects the model budget and makes it costly to open fresh sessions just to retry verification. They're in memory and best-effort; a production deployment would add limits at the edge.
 - **Sessions** are stored in SQLite with a hashed bearer token and optimistic versioning. After 30 minutes idle, verification expires, the conversation resumes at `VERIFY_ID`, and earlier claim details are hidden.
 
 Code map:
@@ -130,6 +133,18 @@ fixtures/                          supplied data, never modified (hash-checked b
 policies/                          defaults.toml (thresholds), document_codes.toml (label aliases)
 docs/                              architecture plan and milestone plan
 ```
+
+## Deploying the live demo (Hugging Face Spaces)
+
+`deploy/huggingface/` holds a two-file Space: a README with Space metadata, and a Dockerfile that runs the image published to GHCR.
+
+```bash
+hf auth login                                       # a token with write access
+hf repo create claims-assistant --repo-type space --space_sdk docker
+hf upload <you>/claims-assistant deploy/huggingface . --repo-type space
+```
+
+Then add `OPENAI_API_KEY` under the Space's *Settings → Variables and secrets*.
 
 ## Local development
 

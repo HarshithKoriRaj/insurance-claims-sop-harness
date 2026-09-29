@@ -7,11 +7,12 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.persistence.store import SessionNotFound, StaleSession
+from app.ratelimit import RateLimiter, parse_limit
 from app.runtime import Runtime, build_runtime
 from app.settings import load_settings
 from app.workflow.engine import ActionNotAvailable, mask_email
@@ -31,6 +32,13 @@ class ActionIn(BaseModel):
 def create_app(runtime: Runtime | None = None) -> FastAPI:
     rt = runtime or build_runtime(load_settings())
     app = FastAPI(title="Claims SOP harness", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    session_limiter = RateLimiter(*parse_limit(rt.settings.session_rate_limit))
+    message_limiter = RateLimiter(*parse_limit(rt.settings.message_rate_limit))
+
+    def throttle(limiter: RateLimiter, request: Request) -> None:
+        client = request.client.host if request.client else "unknown"
+        if not limiter.allow(client):
+            raise HTTPException(429, "Too many requests; please wait a minute and try again")
 
     def now() -> datetime:
         return rt.clock.now()
@@ -103,7 +111,8 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return {"status": "ok", "model": rt.settings.model, "model_mode": rt.conversation.mode}
 
     @app.post("/api/sessions", status_code=201)
-    def create_session() -> dict[str, Any]:
+    def create_session(request: Request) -> dict[str, Any]:
+        throttle(session_limiter, request)
         session_id, token = rt.sessions.new_credentials()
         at = now()
         state = SessionState(session_id=session_id, created_at=at, last_activity_at=at)
@@ -117,7 +126,10 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return {"view": view(state)}
 
     @app.post("/api/sessions/{session_id}/messages")
-    def post_message(session_id: str, body: MessageIn, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    def post_message(
+        session_id: str, body: MessageIn, request: Request, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        throttle(message_limiter, request)
         version, state = load(session_id, authorization)
         limits = rt.policy.session
         text = body.text.strip()
@@ -137,7 +149,10 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return {"view": view(state)}
 
     @app.post("/api/sessions/{session_id}/actions")
-    def post_action(session_id: str, body: ActionIn, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    def post_action(
+        session_id: str, body: ActionIn, request: Request, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        throttle(message_limiter, request)
         version, state = load(session_id, authorization)
         at = now()
         try:

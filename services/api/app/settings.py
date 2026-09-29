@@ -30,6 +30,8 @@ class Settings:
     smtp_host: str | None
     smtp_port: int
     mail_from: str
+    session_rate_limit: str
+    message_rate_limit: str
 
     @property
     def model(self) -> str:
@@ -76,4 +78,7 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         smtp_host=env.get("SMTP_HOST") or None,
         smtp_port=int(env.get("SMTP_PORT") or 1025),
         mail_from=env.get("MAIL_FROM") or "claims-assistant@example.com",
+        # Per client: new conversations per window, and messages or actions per window.
+        session_rate_limit=env.get("SESSION_RATE_LIMIT") or "10/600",
+        message_rate_limit=env.get("MESSAGE_RATE_LIMIT") or "30/60",
     )
