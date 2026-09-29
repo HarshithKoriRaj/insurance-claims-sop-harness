@@ -144,6 +144,13 @@ def test_templates_are_checked_when_the_library_is_built(store, catalog, changes
         GuidanceLibrary(_with_rule(store.guideline, 1, **changes), catalog)
 
 
+def test_a_repeated_topic_is_rejected(store, catalog):
+    rules = store.guideline.claim_followup_guidance
+    guideline = store.guideline.model_copy(update={"claim_followup_guidance": (*rules, rules[0])})
+    with pytest.raises(ValueError, match="topic 'missing_required_material_alternatives' repeats"):
+        GuidanceLibrary(guideline, catalog)
+
+
 def test_guidance_keys_that_share_a_document_code_are_rejected(store, catalog):
     guidance = dict(store.guideline.document_guidance)
     guidance["pathology report"] = guidance["original pathology report"]

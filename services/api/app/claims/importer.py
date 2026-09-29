@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -129,11 +129,12 @@ def _check_references(store: FixtureStore, catalog: DocumentCatalog) -> None:
 
     guideline = store.guideline
     _require_unique("follow-up topic", [rule.topic for rule in guideline.claim_followup_guidance])
-    for key in guideline.document_guidance:
-        _require_code(catalog, key, "required_document_guideline.json: document_guidance")
-    for key in guideline.document_alternative_guidance:
-        if key != "default":
-            _require_code(catalog, key, "required_document_guideline.json: document_alternative_guidance")
+    _require_one_key_per_code(catalog, "document_guidance", guideline.document_guidance)
+    _require_one_key_per_code(
+        catalog,
+        "document_alternative_guidance",
+        [key for key in guideline.document_alternative_guidance if key != "default"],
+    )
     if "default" not in guideline.document_alternative_guidance:
         raise FixtureError("required_document_guideline.json: document_alternative_guidance has no default")
 
@@ -156,8 +157,19 @@ def _require_unique_policy_numbers(holders: tuple[Policyholder, ...]) -> None:
         raise FixtureError(f"policyholders.json: parties share a policy number: {groups}")
 
 
-def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
+def _require_one_key_per_code(catalog: DocumentCatalog, section: str, keys: Iterable[str]) -> None:
+    # Guidance is looked up by document code, so each code may have only one entry.
+    where = f"required_document_guideline.json: {section}"
+    keys_by_code: dict[str, str] = {}
+    for key in keys:
+        code = _require_code(catalog, key, where)
+        if code in keys_by_code:
+            raise FixtureError(f"{where}: {keys_by_code[code]!r} and {key!r} share document code {code}")
+        keys_by_code[code] = key
+
+
+def _require_code(catalog: DocumentCatalog, label: str, where: str) -> str:
     try:
-        catalog.code_for(label)
+        return catalog.code_for(label)
     except UnknownDocumentLabel:
         raise FixtureError(f"{where}: document label {label!r} has no document code") from None

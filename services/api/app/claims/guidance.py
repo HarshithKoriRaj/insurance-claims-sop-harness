@@ -60,6 +60,8 @@ class GuidanceLibrary:
         )
         self._rules: dict[str, tuple[int, FollowupRule]] = {}
         for index, rule in enumerate(guideline.claim_followup_guidance):
+            if rule.topic in self._rules:
+                raise ValueError(f"claim_followup_guidance/{index}: topic {rule.topic!r} repeats")
             _check_followup_template(index, rule)
             self._rules[rule.topic] = (index, rule)
 

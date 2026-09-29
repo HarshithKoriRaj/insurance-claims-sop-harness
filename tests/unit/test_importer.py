@@ -132,6 +132,10 @@ def _add_unmapped_alternative_key(guideline):
     guideline["document_alternative_guidance"]["x-ray"] = {"en": "text"}
 
 
+def _add_second_key_for_one_document(guideline):
+    guideline["document_guidance"]["pathology report"] = {"en": "text"}
+
+
 def _duplicate_party_id(holders):
     holders[1]["party_id"] = holders[0]["party_id"]
 
@@ -150,9 +154,20 @@ def _duplicate_party_id(holders):
             _add_unmapped_alternative_key,
             "document_alternative_guidance: document label 'x-ray' has no document code",
         ),
+        (
+            "required_document_guideline.json",
+            _add_second_key_for_one_document,
+            "document_guidance: 'original pathology report' and 'pathology report' share document code PATHOLOGY_REPORT",
+        ),
         ("policyholders.json", _duplicate_party_id, "duplicate party_id: P9"),
     ],
-    ids=["missing-default-alternative", "unmapped-guidance-key", "unmapped-alternative-key", "duplicate-party-id"],
+    ids=[
+        "missing-default-alternative",
+        "unmapped-guidance-key",
+        "unmapped-alternative-key",
+        "two-keys-for-one-document",
+        "duplicate-party-id",
+    ],
 )
 def test_other_reference_errors_are_rejected(fixture_copy, catalog, name, change, message):
     fixture_copy.edit(name, change)
