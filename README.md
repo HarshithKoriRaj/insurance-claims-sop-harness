@@ -1,6 +1,6 @@
 # Claims Assistant: an SOP harness for an insurance claims support agent
 
-A chat agent for insurance claims support that follows a standard operating procedure in four phases. Claude reads each message and words each reply. Deterministic code decides everything in between: who the caller is, what they may see, and what happens next.
+A chat agent for insurance claims support that follows a standard operating procedure in four phases. An LLM (OpenAI or Claude, whichever key you provide) reads each message and words each reply. Deterministic code decides everything in between: who the caller is, what they may see, and what happens next.
 
 | Phase | What happens | Gate to leave it |
 |---|---|---|
@@ -14,7 +14,7 @@ The permitted identity fields are full name, date of birth, phone, email, and th
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env          # put your Anthropic API key in ANTHROPIC_API_KEY
+cp .env.example .env          # set OPENAI_API_KEY (or ANTHROPIC_API_KEY)
 docker compose up --build
 ```
 
@@ -22,7 +22,11 @@ docker compose up --build
 - Demo inbox for the email summaries (Mailpit): http://localhost:8025
 - API docs: http://localhost:8000/api/docs
 
-Without an API key the app still works, in a rule-based offline mode. The inspector panel shows which mode is active.
+Without an API key the app still works, in a rule-based offline mode. The inspector panel shows which mode is active (OpenAI, Claude, or Offline rules).
+
+![Margaret verified and routed to CL-2048](docs/screenshots/verified-and-routed.png)
+
+![Email summary preview with Send/Skip](docs/screenshots/summary-offer.png)
 
 ### Try the demo script
 
@@ -55,20 +59,24 @@ Set these in `.env` (see `.env.example`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | (none) | Enables Claude. Read once at startup; never logged or returned by the API |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model for interpreting and replying |
+| `OPENAI_API_KEY` | (none) | Enables OpenAI. Read once at startup; never logged or returned by the API |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | OpenAI model for interpreting and replying |
+| `ANTHROPIC_API_KEY` | (none) | Enables Claude instead |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Claude model |
+| `LLM_PROVIDER` | (auto) | `openai`, `anthropic` or `offline`. Defaults to whichever key is set |
 | `APP_MODE` | `demo` | `demo` pins the business date to 2026-03-01 so the fixture appeal deadlines are still open. `production` uses the real date and rejects overrides |
 | `BUSINESS_DATE_OVERRIDE` | (empty) | Demo mode only: `YYYY-MM-DD` or `today` |
 
 ## How it works
 
 ```
-browser ──► FastAPI ──► ConversationService.interpret ──► Claude (forced tool call) → Interpretation
+browser ──► FastAPI ──► ConversationService.interpret ──► LLM (forced function call) → Interpretation → grounded
                     ├─► WorkflowEngine (deterministic) ──► ClaimAccess (owner-scoped), GuidanceLibrary, Mailer
-                    └─► ConversationService.respond ─────► Claude (writes from the engine's brief) → reply
+                    └─► ConversationService.respond ─────► LLM (writes from the engine's brief) → reply
 ```
 
-- **The model proposes; the code decides.** Each turn, Claude fills in a strict schema: identity details as stated, intent, claim hints, scope, emotion, and whether the caller wants a human, is refusing, or is choosing to send or skip. The engine validates that and makes every transition. No model output can mark a caller verified, pick another customer's claim, or send an email.
+- **The model proposes; the code decides.** Each turn, the model fills in a strict schema: identity details as stated, intent, claim hints, scope, emotion, and whether the caller wants a human, is refusing, or is choosing to send or skip. The engine validates that and makes every transition. No model output can mark a caller verified, pick another customer's claim, or send an email.
+- **Grounding.** An identity value or claim hint the model proposes is kept only if it actually appears in the caller's message. So a model that fills in a year the caller never said, or "completes" an email address, can't steer verification or claim selection. A dropped identity value falls back to the deterministic rule reading of the message.
 - **Nothing is disclosed before verification.** Claim lookups need a verified party ID. Before verification the reply brief contains no claim data. As a backstop, any model reply that mentions a claim ID or an amount before verification is discarded and replaced with a template.
 - **Only the caller's own claims.** Every lookup is scoped to the verified party. Another customer's case ID and a nonexistent one get the same "couldn't find it" answer.
 - **Verification** compares normalized values (NFKC, case, spacing, E.164 phones, ISO dates) against every record and every alias, with no first-match shortcut.
@@ -82,7 +90,7 @@ browser ──► FastAPI ──► ConversationService.interpret ──► Clau
   - Identity refusals: explained, with alternatives offered.
   - Emotions: acknowledged first.
   - Handoff to a human is requested and clearly labelled as simulated.
-- **Resilience.** If Claude is unavailable, interpretation falls back to rules and replies fall back to templates, so the workflow and its gates still work.
+- **Resilience.** If the model is unavailable, interpretation falls back to rules and replies fall back to templates, so the workflow and its gates still work.
 - **Sessions** are stored in SQLite with a hashed bearer token and optimistic versioning. After 30 minutes idle, verification expires, the conversation resumes at `VERIFY_ID`, and earlier claim details are hidden.
 
 Code map:
@@ -95,7 +103,8 @@ services/api/app/
                                    deadlines, access.py (owner-scoped claim tools)
   identity/                        normalize.py, fields.py, verify.py
   workflow/                        state.py, engine.py (phases, gates, transitions)
-  conversation/                    claude.py, interpretation.py (schema + offline rules), templates.py, service.py
+  conversation/                    claude.py, openai_model.py, interpretation.py (schema + offline rules),
+                                   templates.py, service.py (grounding, leak filter, fallbacks)
   summaries/mailer.py              idempotent SMTP sender (Mailpit in Docker)
   main.py, runtime.py, settings.py API, composition root, env settings
 apps/web/                          React + Vite chat UI with phase stepper and session inspector
@@ -108,7 +117,8 @@ docs/                              architecture plan and milestone plan
 
 ```bash
 uv sync
-uv run pytest                        # 287 tests; offline, deterministic
+uv run pytest                        # 296 tests; offline, deterministic
+set -a; . ./.env; set +a; RUN_LIVE_TESTS=1 uv run pytest tests/live   # 6 live-model scenarios
 set -a; . ./.env; set +a             # load the API key into this shell
 uv run uvicorn app.main:create_app --factory --app-dir services/api --reload
 cd apps/web && npm install && npm run dev      # http://localhost:5173, proxies /api to :8000
