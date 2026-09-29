@@ -1,0 +1,18 @@
+# Render Blueprint: runs the image GitHub Actions publishes from main on Render's free plan.
+# Render asks for OPENAI_API_KEY when the Blueprint is first applied.
+services:
+  - type: web
+    name: claims-assistant
+    runtime: image
+    image:
+      url: ghcr.io/harshithkoriraj/insurance-claims-sop-harness:latest
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: APP_MODE
+        value: demo
+      # The free plan's filesystem is ephemeral; sessions only need to last a demo.
+      - key: DATABASE_PATH
+        value: /tmp/sessions.sqlite3

@@ -134,17 +134,24 @@ policies/                          defaults.toml (thresholds), document_codes.to
 docs/                              architecture plan and milestone plan
 ```
 
-## Deploying the live demo (Hugging Face Spaces)
+## Deploying the live demo (Render, free)
 
-`deploy/huggingface/` holds a two-file Space: a README with Space metadata, and a Dockerfile that runs the image published to GHCR.
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/HarshithKoriRaj/insurance-claims-sop-harness)
 
-```bash
-hf auth login                                       # a token with write access
-hf repo create claims-assistant --repo-type space --space_sdk docker
-hf upload <you>/claims-assistant deploy/huggingface . --repo-type space
-```
+`render.yaml` is a Render Blueprint that runs the published GHCR image on the free plan.
 
-Then add `OPENAI_API_KEY` under the Space's *Settings → Variables and secrets*.
+1. Click the button, or in Render choose *New → Blueprint* and pick this repo.
+2. Sign in, and enter `OPENAI_API_KEY` when Render asks for it.
+3. Apply.
+
+The service appears at `https://claims-assistant-<suffix>.onrender.com`.
+
+Free-plan limits:
+- The service sleeps after 15 minutes without traffic. The first request after that takes about a minute.
+- Sessions live in `/tmp` and reset when the service restarts.
+- To pick up a newer image, use *Manual Deploy → Deploy latest reference*.
+
+`deploy/huggingface/` holds an equivalent Space definition. Docker Spaces now need a Hugging Face PRO subscription.
 
 ## Local development
 
