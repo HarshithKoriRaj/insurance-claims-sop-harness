@@ -9,16 +9,21 @@ from datetime import date
 from app.contracts.fixtures import Claim
 
 
+def _require_date(name: str, value: object) -> None:
+    # datetime is a date subclass, so a clock.now() timestamp would otherwise pass for
+    # the business date. The message names only the type, never the value.
+    if type(value) is not date:
+        raise TypeError(f"{name} must be a date, not {type(value).__name__}")
+
+
 @dataclass(frozen=True)
 class DeadlineStatus:
     deadline: date
     business_date: date
 
     def __post_init__(self) -> None:
-        # datetime is a date subclass. Rejecting it here makes a clock.now() timestamp
-        # fail at once rather than when days_remaining is first read.
-        if type(self.deadline) is not date or type(self.business_date) is not date:
-            raise TypeError("deadline and business_date must be dates, not timestamps")
+        _require_date("deadline", self.deadline)
+        _require_date("business_date", self.business_date)
 
     @property
     def days_remaining(self) -> int:
@@ -30,6 +35,8 @@ class DeadlineStatus:
 
 
 def appeal_deadline_status(claim: Claim, business_date: date) -> DeadlineStatus | None:
+    # Checked before the no-deadline return, so misuse fails for every claim, not only denied ones.
+    _require_date("business_date", business_date)
     if claim.appeal_deadline is None:
         return None
     return DeadlineStatus(deadline=claim.appeal_deadline, business_date=business_date)
