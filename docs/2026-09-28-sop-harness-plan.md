@@ -318,6 +318,23 @@ Each milestone should be reviewable and runnable before proceeding. Write meanin
 
 Do not defer the workflow kernel, ownership checks, or consent integrity until after the conversational demo. Those are the core product.
 
+### Carry-forwards from Milestone 1
+
+Code review of Milestone 1 found these constraints on later milestones. Each needs an owner and a test in the milestone listed.
+
+| Milestone 1 fact | Milestone | Required handling |
+|---|---|---|
+| `FixtureStore.claim(case_id)` returns any claim; it has no owner check. | 3 | Tools read claims only through an accessor scoped to the verified subject, such as `claim_for(subject_party_id, case_id)`. It gives the same "no match" for unknown and not-owned case IDs. |
+| The fixture store is loaded once and never changes. | 3 | The claims adapter reads through a replaceable store, so claim-change and failed-re-read tests can swap data mid-session. |
+| `store.representatives` lists relationships only. | 3 | Representative authority comes only from the consent adapter. A relationship record never grants access. |
+| The store is read-only at the top level only. Nested dicts in `guideline` and `claim_schema` can still be changed. | All | Treat them as read-only. Tests never change the shared session `store`. |
+| `record_values` raises `UnusableRecordValue` only when a record is evaluated. | 3 | At startup, compute every policyholder's values for every permitted field. A bad stored value then fails at load, not mid-verification. |
+| The normalizers return a `Problem` for unclear input. A date that could be day-first or month-first is AMBIGUOUS with both readings. A phone number that looks mistyped is AMBIGUOUS. | 3 | Ask a focused question about the problem. A `Problem` result is never a failed attempt, and the verifier never picks one of two date readings. |
+| `Normalized` leaves values out of its repr, but the fixture models (`Policyholder`, `Claim`) print personal data in theirs. | 2, 7 | Logging and telemetry redact explicitly. Never log models or raw caller input. |
+| `build_clock` rejects a demo override in production, but only when it is called. | 2 | Call it at startup, so a bad business-date setting fails at boot. Decide whether an empty override variable means unset. |
+| The API package lives in `services/api`. | 6 | Run the server with `--app-dir services/api` or `PYTHONPATH`. Docker and CI install with `uv sync --locked`. |
+| Follow-up templates assume a plural document list: "If diagnosis report are incomplete…". | 4 | The agent never rewrites approved text. Report the wording to the fixture owner instead of patching it in code. |
+
 ## Edge-case acceptance matrix
 
 | Input or failure | Required result |
