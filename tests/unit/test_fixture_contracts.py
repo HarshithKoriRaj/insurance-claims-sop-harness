@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -115,7 +115,9 @@ def test_emails_on_file_must_be_addresses(field, value):
         Policyholder.model_validate({**VALID_HOLDER, field: value})
 
 
-@pytest.mark.parametrize("bad", ["1773792000", 0, "1985-03-15T00:00:00", "03/15/1985", "٢٠٢٦-٠٣-١٨"])
+@pytest.mark.parametrize(
+    "bad", ["1773792000", 0, "1985-03-15T00:00:00", "03/15/1985", "٢٠٢٦-٠٣-١٨", "20260318", datetime(2026, 3, 18)]
+)
 def test_dates_must_be_iso_strings(bad):
     with pytest.raises(ValidationError):
         Claim.model_validate({**VALID_CLAIM, "created_at": bad})
