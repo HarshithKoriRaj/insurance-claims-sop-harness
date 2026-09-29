@@ -19,9 +19,12 @@ def test_demo_mode_can_use_the_real_calendar(policy):
     assert isinstance(build_clock("demo", policy, "today"), SystemClock)
 
 
-def test_malformed_override_is_a_configuration_error(policy):
-    with pytest.raises(ClockConfigError, match="not an ISO date"):
-        build_clock("demo", policy, "March 1st")
+@pytest.mark.parametrize(
+    "override", ["March 1st", "20260301", "2026-W09-7", "2026-02-30"], ids=["words", "compact", "iso-week", "no-such-day"]
+)
+def test_malformed_override_is_a_configuration_error(policy, override):
+    with pytest.raises(ClockConfigError, match="not an ISO date; expected YYYY-MM-DD"):
+        build_clock("demo", policy, override)
 
 
 @pytest.mark.parametrize("override", ["2026-03-01", "today"])
