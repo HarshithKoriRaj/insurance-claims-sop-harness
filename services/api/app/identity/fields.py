@@ -5,12 +5,18 @@ silently dropped."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from app.contracts.fixtures import Policyholder
 from app.identity.normalize import Normalized, normalize_dob, normalize_email, normalize_name
-from app.policies import IdentityField
+from app.policies import IdentityField, VerificationPolicy
 
 
 class UnusableRecordValue(ValueError):
+    pass
+
+
+class UnverifiableRecord(ValueError):
     pass
 
 
@@ -43,3 +49,17 @@ def record_values(record: Policyholder, field: IdentityField) -> frozenset[str]:
 
 def field_matches(record: Policyholder, field: IdentityField, normalized_value: str) -> bool:
     return normalized_value in record_values(record, field)
+
+
+def check_every_record_can_verify(records: Iterable[Policyholder], verification: VerificationPolicy) -> None:
+    """Startup check. Normalizes every stored value of every permitted field, so bad data
+    raises UnusableRecordValue at load instead of mid-verification, and confirms each
+    record holds enough permitted fields to verify at all. A national-ID holder has no
+    SSN value, so a policy that needs one could never verify them."""
+    for record in records:
+        held = [field for field in verification.permitted_fields if record_values(record, field)]
+        if len(held) < verification.required_matching_fields:
+            raise UnverifiableRecord(
+                f"{record.party_id}: holds values for {len(held)} permitted fields, "
+                f"but {verification.required_matching_fields} must match"
+            )

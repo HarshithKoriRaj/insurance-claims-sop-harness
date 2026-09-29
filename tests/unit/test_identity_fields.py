@@ -2,7 +2,13 @@ from datetime import date
 
 import pytest
 
-from app.identity.fields import UnusableRecordValue, field_matches, record_values
+from app.identity.fields import (
+    UnusableRecordValue,
+    UnverifiableRecord,
+    check_every_record_can_verify,
+    field_matches,
+    record_values,
+)
 from app.identity.normalize import Normalized, normalize, normalize_email, normalize_name
 
 
@@ -73,6 +79,28 @@ def test_an_unusable_stored_value_raises_without_echoing_it(store, field, update
     with pytest.raises(UnusableRecordValue, match=f"P9: a stored {field} cannot be normalized") as caught:
         record_values(holder, field)
     assert secret not in str(caught.value).casefold()
+
+
+def test_the_default_policy_can_verify_every_policyholder(store, policy):
+    check_every_record_can_verify(store.policyholders, policy.verification)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"permitted_fields": ("full_name", "dob", "ssn_last4")}, {"required_matching_fields": 5}],
+    ids=["ssn-among-three-permitted", "all-five-required"],
+)
+def test_a_policy_that_strands_national_id_holders_is_refused(store, policy, changes):
+    # P12 and P13 hold a national ID, so they have no ssn_last4 value to match.
+    verification = policy.verification.model_copy(update=changes)
+    with pytest.raises(UnverifiableRecord, match="P12: holds values for"):
+        check_every_record_can_verify(store.policyholders, verification)
+
+
+def test_the_startup_check_surfaces_an_unusable_stored_value(store, policy):
+    records = [store.policyholder("P9").model_copy(update={"name_aliases": ("Margaret",)})]
+    with pytest.raises(UnusableRecordValue):
+        check_every_record_can_verify(records, policy.verification)
 
 
 def test_an_unknown_field_is_refused(store):
