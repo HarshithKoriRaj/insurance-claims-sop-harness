@@ -40,7 +40,7 @@ Run every command from the repository root: `/Users/harshithkoriraj/Downloads/ap
 ### Task 1: Repository and project scaffold
 
 **Files:**
-- Create: `.gitignore`, `.python-version`, `pyproject.toml`, `services/api/app/__init__.py`, `tests/conftest.py`, `tests/unit/test_scaffold.py`, `tests/unit/test_fixture_integrity.py`
+- Create: `.gitignore`, `.gitattributes`, `.python-version`, `pyproject.toml`, `services/api/app/__init__.py`, `tests/conftest.py`, `tests/unit/test_scaffold.py`, `tests/unit/test_fixture_integrity.py`
 
 - [ ] **Step 1: Initialize git and commit the supplied material on `main`**
 
@@ -78,6 +78,13 @@ Expected: a root commit on `main`, then `Switched to a new branch 'm1-foundation
 3.13
 ```
 
+`.gitattributes`, so git never rewrites fixture line endings and the integrity hashes hold on every platform:
+
+```gitattributes
+# Fixtures are hashed byte-for-byte by tests/unit/test_fixture_integrity.py; never convert their line endings.
+fixtures/** -text
+```
+
 `pyproject.toml`:
 
 ```toml
@@ -85,7 +92,7 @@ Expected: a root commit on `main`, then `Switched to a new branch 'm1-foundation
 name = "insurance-claims-sop"
 version = "0.1.0"
 description = "SOP harness for an insurance claims support agent"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.9,<3",
     "tzdata>=2024.1",
@@ -102,7 +109,7 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["services/api"]
-addopts = "-ra"
+addopts = "-ra --import-mode=importlib"
 ```
 
 Run: `uv sync`
@@ -217,7 +224,7 @@ Expected: PASS. This test guards the delivered files; it has no implementation s
 - [ ] **Step 8: Commit**
 
 ```bash
-git add .python-version pyproject.toml uv.lock services tests
+git add .gitattributes .python-version pyproject.toml uv.lock services tests
 git commit -m "chore: scaffold Python project and guard the supplied fixtures"
 ```
 
@@ -288,7 +295,10 @@ def test_unknown_keys_are_rejected(policies_dir, tmp_path, old, new):
     ("old", "new", "message"),
     [
         ("required_matching_fields = 3", "required_matching_fields = 2", "greater than or equal to 3"),
-        ("required_matching_fields = 3", "required_matching_fields = true", "greater than or equal to 3"),
+        ("required_matching_fields = 3", "required_matching_fields = true", "Input should be a valid integer"),
+        ("max_failed_submissions = 3", 'max_failed_submissions = "3"', "Input should be a valid integer"),
+        ("idle_expiry_minutes = 30", "idle_expiry_minutes = 30.0", "Input should be a valid integer"),
+        ("business_date = 2026-03-01", 'business_date = "2026-03-01"', "Input should be a valid date"),
         ("required_matching_fields = 3", "required_matching_fields = 6", "exceeds the number of permitted fields"),
         (
             'permitted_fields = ["full_name", "dob", "phone", "email", "ssn_last4"]',
@@ -301,20 +311,31 @@ def test_unknown_keys_are_rejected(policies_dir, tmp_path, old, new):
         (
             'default_country_calling_code = "1"\nnational_number_length = 10',
             'default_country_calling_code = "999"\nnational_number_length = 14',
-            "exceeds 15 digits",
+            "must be 8 to 15 digits",
         ),
+        (
+            'default_country_calling_code = "1"\nnational_number_length = 10',
+            'default_country_calling_code = "1"\nnational_number_length = 6',
+            "must be 8 to 15 digits",
+        ),
+        ('default_country_calling_code = "1"', 'default_country_calling_code = "1\\u0662"', "should match pattern"),
         ('timezone = "America/Los_Angeles"', 'timezone = "america/los_angeles"', "unknown IANA time zone"),
         ('version = "2026-09-28"', 'version = ""', "at least 1 character"),
     ],
     ids=[
         "below-three-fields",
         "boolean-threshold",
+        "quoted-threshold",
+        "float-threshold",
+        "quoted-business-date",
         "more-fields-than-permitted",
         "repeated-field",
         "national-id-field",
         "offer-after-stop",
         "recent-exceeds-max-turns",
         "phone-longer-than-e164",
+        "phone-shorter-than-e164",
+        "non-ascii-country-code",
         "timezone-wrong-case",
         "empty-version",
     ],
@@ -378,21 +399,24 @@ business_date = 2026-03-01
 `services/api/app/policies.py`:
 
 ```python
-"""Loads the explicit, versioned defaults in policies/defaults.toml."""
+"""Loads the explicit, versioned defaults in policies/defaults.toml. Numbers and
+dates are read strictly: a quoted number, a float, or true is an error, never a
+silently converted value."""
 
 from __future__ import annotations
 
 import tomllib
 from datetime import date
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from zoneinfo import available_timezones
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, Strict, StrictInt, field_validator, model_validator
 
 IdentityField = Literal["full_name", "dob", "phone", "email", "ssn_last4"]
 
 MIN_MATCHING_FIELDS = 3  # Non-negotiable invariant 2 in docs/2026-09-28-sop-harness-plan.md.
+E164_MIN_DIGITS = 8
 E164_MAX_DIGITS = 15
 
 
@@ -401,9 +425,9 @@ class _Strict(BaseModel):
 
 
 class VerificationPolicy(_Strict):
-    required_matching_fields: int = Field(ge=MIN_MATCHING_FIELDS)
-    max_failed_submissions: int = Field(ge=1)
-    idle_expiry_minutes: int = Field(ge=1)
+    required_matching_fields: StrictInt = Field(ge=MIN_MATCHING_FIELDS)
+    max_failed_submissions: StrictInt = Field(ge=1)
+    idle_expiry_minutes: StrictInt = Field(ge=1)
     permitted_fields: tuple[IdentityField, ...]
 
     @model_validator(mode="after")
@@ -416,10 +440,10 @@ class VerificationPolicy(_Strict):
 
 
 class SessionPolicy(_Strict):
-    max_age_hours: int = Field(ge=1)
-    max_input_characters: int = Field(ge=1)
-    recent_turns: int = Field(ge=1)
-    max_turns: int = Field(ge=1)
+    max_age_hours: StrictInt = Field(ge=1)
+    max_input_characters: StrictInt = Field(ge=1)
+    recent_turns: StrictInt = Field(ge=1)
+    max_turns: StrictInt = Field(ge=1)
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:
@@ -429,9 +453,9 @@ class SessionPolicy(_Strict):
 
 
 class RecoveryPolicy(_Strict):
-    unrelated_offer_human_at: int = Field(ge=1)
-    unrelated_stop_at: int = Field(ge=1)
-    refusal_stop_at: int = Field(ge=1)
+    unrelated_offer_human_at: StrictInt = Field(ge=1)
+    unrelated_stop_at: StrictInt = Field(ge=1)
+    refusal_stop_at: StrictInt = Field(ge=1)
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:
@@ -441,17 +465,20 @@ class RecoveryPolicy(_Strict):
 
 
 class ClaimsPolicy(_Strict):
-    fact_max_age_minutes: int = Field(ge=1)
+    fact_max_age_minutes: StrictInt = Field(ge=1)
 
 
 class PhonePolicy(_Strict):
-    default_country_calling_code: str = Field(pattern=r"^[1-9]\d{0,2}$")
-    national_number_length: int = Field(ge=4, le=14)
+    default_country_calling_code: str = Field(pattern=r"^[1-9][0-9]{0,2}$")
+    national_number_length: StrictInt = Field(ge=4, le=14)
 
     @model_validator(mode="after")
     def _fits_e164(self) -> Self:
-        if len(self.default_country_calling_code) + self.national_number_length > E164_MAX_DIGITS:
-            raise ValueError(f"country code plus national number exceeds {E164_MAX_DIGITS} digits")
+        digits = len(self.default_country_calling_code) + self.national_number_length
+        if not E164_MIN_DIGITS <= digits <= E164_MAX_DIGITS:
+            raise ValueError(
+                f"country code plus national number must be {E164_MIN_DIGITS} to {E164_MAX_DIGITS} digits"
+            )
         return self
 
 
@@ -468,7 +495,7 @@ class BusinessPolicy(_Strict):
 
 
 class DemoPolicy(_Strict):
-    business_date: date
+    business_date: Annotated[date, Strict()]
 
 
 class Policy(_Strict):
@@ -500,7 +527,7 @@ def policy(policies_dir):
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_policies.py -v`
-Expected: PASS (13 tests)
+Expected: PASS (18 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -542,9 +569,12 @@ def test_demo_mode_can_use_the_real_calendar(policy):
     assert isinstance(build_clock("demo", policy, "today"), SystemClock)
 
 
-def test_malformed_override_is_a_configuration_error(policy):
-    with pytest.raises(ClockConfigError, match="not an ISO date"):
-        build_clock("demo", policy, "March 1st")
+@pytest.mark.parametrize(
+    "override", ["March 1st", "20260301", "2026-W09-7", "2026-02-30"], ids=["words", "compact", "iso-week", "no-such-day"]
+)
+def test_malformed_override_is_a_configuration_error(policy, override):
+    with pytest.raises(ClockConfigError, match="not an ISO date; expected YYYY-MM-DD"):
+        build_clock("demo", policy, override)
 
 
 @pytest.mark.parametrize("override", ["2026-03-01", "today"])
@@ -592,6 +622,7 @@ business date used for claim deadlines."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Protocol
@@ -636,6 +667,9 @@ class ClockConfigError(RuntimeError):
     pass
 
 
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
 def build_clock(app_mode: str, policy: Policy, business_date_override: str | None = None) -> Clock:
     timezone = ZoneInfo(policy.business.timezone)
     if app_mode == "production":
@@ -646,21 +680,27 @@ def build_clock(app_mode: str, policy: Policy, business_date_override: str | Non
         if business_date_override == "today":
             return SystemClock(timezone)
         if business_date_override is not None:
-            try:
-                return DemoClock(date.fromisoformat(business_date_override))
-            except ValueError:
-                raise ClockConfigError(
-                    f"business-date override {business_date_override!r} is not an ISO date; "
-                    "expected YYYY-MM-DD or 'today'"
-                ) from None
+            return DemoClock(_override_date(business_date_override))
         return DemoClock(policy.demo.business_date)
     raise ClockConfigError(f"unknown APP_MODE {app_mode!r}; expected 'demo' or 'production'")
+
+
+def _override_date(text: str) -> date:
+    # date.fromisoformat also reads "20260928" and "2026-W40-1"; only YYYY-MM-DD is meant.
+    try:
+        if not _ISO_DATE.fullmatch(text):
+            raise ValueError(text)
+        return date.fromisoformat(text)
+    except ValueError:
+        raise ClockConfigError(
+            f"business-date override {text!r} is not an ISO date; expected YYYY-MM-DD or 'today'"
+        ) from None
 ```
 
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_clock.py -v`
-Expected: PASS (13 tests)
+Expected: PASS (16 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -682,7 +722,7 @@ git commit -m "feat: add clock with demo business-date override"
 
 ```python
 import json
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -798,7 +838,9 @@ def test_emails_on_file_must_be_addresses(field, value):
         Policyholder.model_validate({**VALID_HOLDER, field: value})
 
 
-@pytest.mark.parametrize("bad", ["1773792000", 0, "1985-03-15T00:00:00", "03/15/1985", "٢٠٢٦-٠٣-١٨"])
+@pytest.mark.parametrize(
+    "bad", ["1773792000", 0, "1985-03-15T00:00:00", "03/15/1985", "٢٠٢٦-٠٣-١٨", "20260318", datetime(2026, 3, 18)]
+)
 def test_dates_must_be_iso_strings(bad):
     with pytest.raises(ValidationError):
         Claim.model_validate({**VALID_CLAIM, "created_at": bad})
@@ -991,7 +1033,7 @@ class DocumentGuideline(_Strict):
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_fixture_contracts.py -v`
-Expected: PASS (33 tests)
+Expected: PASS (35 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1384,6 +1426,10 @@ def _add_unmapped_alternative_key(guideline):
     guideline["document_alternative_guidance"]["x-ray"] = {"en": "text"}
 
 
+def _add_second_key_for_one_document(guideline):
+    guideline["document_guidance"]["pathology report"] = {"en": "text"}
+
+
 def _duplicate_party_id(holders):
     holders[1]["party_id"] = holders[0]["party_id"]
 
@@ -1402,9 +1448,20 @@ def _duplicate_party_id(holders):
             _add_unmapped_alternative_key,
             "document_alternative_guidance: document label 'x-ray' has no document code",
         ),
+        (
+            "required_document_guideline.json",
+            _add_second_key_for_one_document,
+            "document_guidance: 'original pathology report' and 'pathology report' share document code PATHOLOGY_REPORT",
+        ),
         ("policyholders.json", _duplicate_party_id, "duplicate party_id: P9"),
     ],
-    ids=["missing-default-alternative", "unmapped-guidance-key", "unmapped-alternative-key", "duplicate-party-id"],
+    ids=[
+        "missing-default-alternative",
+        "unmapped-guidance-key",
+        "unmapped-alternative-key",
+        "two-keys-for-one-document",
+        "duplicate-party-id",
+    ],
 )
 def test_other_reference_errors_are_rejected(fixture_copy, catalog, name, change, message):
     fixture_copy.edit(name, change)
@@ -1457,7 +1514,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -1580,11 +1637,12 @@ def _check_references(store: FixtureStore, catalog: DocumentCatalog) -> None:
 
     guideline = store.guideline
     _require_unique("follow-up topic", [rule.topic for rule in guideline.claim_followup_guidance])
-    for key in guideline.document_guidance:
-        _require_code(catalog, key, "required_document_guideline.json: document_guidance")
-    for key in guideline.document_alternative_guidance:
-        if key != "default":
-            _require_code(catalog, key, "required_document_guideline.json: document_alternative_guidance")
+    _require_one_key_per_code(catalog, "document_guidance", guideline.document_guidance)
+    _require_one_key_per_code(
+        catalog,
+        "document_alternative_guidance",
+        [key for key in guideline.document_alternative_guidance if key != "default"],
+    )
     if "default" not in guideline.document_alternative_guidance:
         raise FixtureError("required_document_guideline.json: document_alternative_guidance has no default")
 
@@ -1607,9 +1665,20 @@ def _require_unique_policy_numbers(holders: tuple[Policyholder, ...]) -> None:
         raise FixtureError(f"policyholders.json: parties share a policy number: {groups}")
 
 
-def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
+def _require_one_key_per_code(catalog: DocumentCatalog, section: str, keys: Iterable[str]) -> None:
+    # Guidance is looked up by document code, so each code may have only one entry.
+    where = f"required_document_guideline.json: {section}"
+    keys_by_code: dict[str, str] = {}
+    for key in keys:
+        code = _require_code(catalog, key, where)
+        if code in keys_by_code:
+            raise FixtureError(f"{where}: {keys_by_code[code]!r} and {key!r} share document code {code}")
+        keys_by_code[code] = key
+
+
+def _require_code(catalog: DocumentCatalog, label: str, where: str) -> str:
     try:
-        catalog.code_for(label)
+        return catalog.code_for(label)
     except UnknownDocumentLabel:
         raise FixtureError(f"{where}: document label {label!r} has no document code") from None
 ```
@@ -1617,7 +1686,7 @@ def _require_code(catalog: DocumentCatalog, label: str, where: str) -> None:
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_importer.py -v`
-Expected: PASS (24 tests)
+Expected: PASS (25 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1963,6 +2032,13 @@ def test_templates_are_checked_when_the_library_is_built(store, catalog, changes
         GuidanceLibrary(_with_rule(store.guideline, 1, **changes), catalog)
 
 
+def test_a_repeated_topic_is_rejected(store, catalog):
+    rules = store.guideline.claim_followup_guidance
+    guideline = store.guideline.model_copy(update={"claim_followup_guidance": (*rules, rules[0])})
+    with pytest.raises(ValueError, match="topic 'missing_required_material_alternatives' repeats"):
+        GuidanceLibrary(guideline, catalog)
+
+
 def test_guidance_keys_that_share_a_document_code_are_rejected(store, catalog):
     guidance = dict(store.guideline.document_guidance)
     guidance["pathology report"] = guidance["original pathology report"]
@@ -2103,6 +2179,8 @@ class GuidanceLibrary:
         )
         self._rules: dict[str, tuple[int, FollowupRule]] = {}
         for index, rule in enumerate(guideline.claim_followup_guidance):
+            if rule.topic in self._rules:
+                raise ValueError(f"claim_followup_guidance/{index}: topic {rule.topic!r} repeats")
             _check_followup_template(index, rule)
             self._rules[rule.topic] = (index, rule)
 
@@ -2240,7 +2318,7 @@ def _keys_by_code(entries: Mapping[str, object], catalog: DocumentCatalog) -> di
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_guidance.py -v`
-Expected: PASS (28 tests)
+Expected: PASS (29 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -2752,7 +2830,13 @@ from datetime import date
 
 import pytest
 
-from app.identity.fields import UnusableRecordValue, field_matches, record_values
+from app.identity.fields import (
+    UnusableRecordValue,
+    UnverifiableRecord,
+    check_every_record_can_verify,
+    field_matches,
+    record_values,
+)
 from app.identity.normalize import Normalized, normalize, normalize_email, normalize_name
 
 
@@ -2825,6 +2909,28 @@ def test_an_unusable_stored_value_raises_without_echoing_it(store, field, update
     assert secret not in str(caught.value).casefold()
 
 
+def test_the_default_policy_can_verify_every_policyholder(store, policy):
+    check_every_record_can_verify(store.policyholders, policy.verification)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"permitted_fields": ("full_name", "dob", "ssn_last4")}, {"required_matching_fields": 5}],
+    ids=["ssn-among-three-permitted", "all-five-required"],
+)
+def test_a_policy_that_strands_national_id_holders_is_refused(store, policy, changes):
+    # P12 and P13 hold a national ID, so they have no ssn_last4 value to match.
+    verification = policy.verification.model_copy(update=changes)
+    with pytest.raises(UnverifiableRecord, match="P12: holds values for"):
+        check_every_record_can_verify(store.policyholders, verification)
+
+
+def test_the_startup_check_surfaces_an_unusable_stored_value(store, policy):
+    records = [store.policyholder("P9").model_copy(update={"name_aliases": ("Margaret",)})]
+    with pytest.raises(UnusableRecordValue):
+        check_every_record_can_verify(records, policy.verification)
+
+
 def test_an_unknown_field_is_refused(store):
     with pytest.raises(ValueError, match="unknown identity field 'policy_number'"):
         record_values(store.policyholder("P9"), "policy_number")
@@ -2847,12 +2953,18 @@ silently dropped."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from app.contracts.fixtures import Policyholder
 from app.identity.normalize import Normalized, normalize_dob, normalize_email, normalize_name
-from app.policies import IdentityField
+from app.policies import IdentityField, VerificationPolicy
 
 
 class UnusableRecordValue(ValueError):
+    pass
+
+
+class UnverifiableRecord(ValueError):
     pass
 
 
@@ -2885,12 +2997,26 @@ def record_values(record: Policyholder, field: IdentityField) -> frozenset[str]:
 
 def field_matches(record: Policyholder, field: IdentityField, normalized_value: str) -> bool:
     return normalized_value in record_values(record, field)
+
+
+def check_every_record_can_verify(records: Iterable[Policyholder], verification: VerificationPolicy) -> None:
+    """Startup check. Normalizes every stored value of every permitted field, so bad data
+    raises UnusableRecordValue at load instead of mid-verification, and confirms each
+    record holds enough permitted fields to verify at all. A national-ID holder has no
+    SSN value, so a policy that needs one could never verify them."""
+    for record in records:
+        held = [field for field in verification.permitted_fields if record_values(record, field)]
+        if len(held) < verification.required_matching_fields:
+            raise UnverifiableRecord(
+                f"{record.party_id}: holds values for {len(held)} permitted fields, "
+                f"but {verification.required_matching_fields} must match"
+            )
 ```
 
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `uv run pytest tests/unit/test_identity_fields.py -v`
-Expected: PASS (15 tests)
+Expected: PASS (19 tests)
 
 - [ ] **Step 5: Commit**
 

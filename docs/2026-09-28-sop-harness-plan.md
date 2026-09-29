@@ -137,7 +137,7 @@ Suggested tool contracts:
 - check_representative_authority(session_context, representative_ref, subject_ref) → pending/approved/denied/revoked/timeout receipt; the fixture adapter replays consent_scenarios.json only in labeled demo mode.
 - resolve_owned_cases(auth_context, normalized_hints) → authorized candidate summaries.
 - read_case(auth_context, case_id) → versioned case facts after ownership check.
-- read_guidance(case_type, document_codes, topic, business_date) → approved guidance with provenance and applicability.
+- read_guidance(topic, business_date, case_type=None, case_id=None) → approved guidance with provenance and applicability. The generic form takes no case-derived arguments. The case-scoped form takes a case_id owned by the verified subject and reads that claim, because follow-up templates render with the claim's own document labels and case ID. Document codes alone cannot render them.
 - prepare_summary(auth_context, discussed_fact_ids, next_steps) → preview version and allowed destination reference.
 - enqueue_summary(auth_context, preview_version, consent_ref, idempotency_key) → queued receipt; invoked by application code only.
 - cancel_summary(session_context, preview_version) → cancelled or already-dispatching receipt.
@@ -328,7 +328,7 @@ Code review of Milestone 1 found these constraints on later milestones. Each nee
 | The fixture store is loaded once and never changes. | 3 | The claims adapter reads through a replaceable store, so claim-change and failed-re-read tests can swap data mid-session. |
 | `store.representatives` lists relationships only. | 3 | Representative authority comes only from the consent adapter. A relationship record never grants access. |
 | The store is read-only at the top level only. Nested dicts in `guideline` and `claim_schema` can still be changed. | All | Treat them as read-only. Tests never change the shared session `store`. |
-| `record_values` raises `UnusableRecordValue` only when a record is evaluated. | 3 | At startup, compute every policyholder's values for every permitted field. A bad stored value then fails at load, not mid-verification. |
+| `check_every_record_can_verify(store.policyholders, policy.verification)` normalizes every stored value and confirms that each record can reach the required number of matching fields. For example, a policy that needs an SSN would strand the national-ID holders P12 and P13. | 2, 3 | Call it at startup, next to `load_fixtures` and `load_policy`. Bad data or a stranding policy then fails at boot, not mid-verification. |
 | The normalizers return a `Problem` for unclear input. A date that could be day-first or month-first is AMBIGUOUS with both readings. A phone number that looks mistyped is AMBIGUOUS. | 3 | Ask a focused question about the problem. A `Problem` result is never a failed attempt, and the verifier never picks one of two date readings. |
 | `Normalized` leaves values out of its repr, but the fixture models (`Policyholder`, `Claim`) print personal data in theirs. | 2, 7 | Logging and telemetry redact explicitly. Never log models or raw caller input. |
 | `build_clock` rejects a demo override in production, but only when it is called. | 2 | Call it at startup, so a bad business-date setting fails at boot. Decide whether an empty override variable means unset. |
