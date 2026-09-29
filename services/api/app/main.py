@@ -4,6 +4,7 @@ uvicorn app.main:create_app --factory --app-dir services/api"""
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -37,8 +38,15 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
 
     def throttle(limiter: RateLimiter, request: Request) -> None:
         client = request.client.host if request.client else "unknown"
-        if not limiter.allow(client):
-            raise HTTPException(429, "Too many requests; please wait a minute and try again")
+        wait = limiter.check(client)
+        if wait:
+            minutes = max(1, math.ceil(wait / 60))
+            raise HTTPException(
+                429,
+                f"Too many requests from your network. Please try again in about {minutes} "
+                f"minute{'s' if minutes > 1 else ''}.",
+                headers={"Retry-After": str(math.ceil(wait))},
+            )
 
     def now() -> datetime:
         return rt.clock.now()

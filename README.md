@@ -86,8 +86,8 @@ Set these in `.env` (see `.env.example`):
 | `LLM_PROVIDER` | (auto) | `openai`, `anthropic` or `offline`. Defaults to whichever key is set |
 | `APP_MODE` | `demo` | `demo` pins the business date to 2026-03-01 so the fixture appeal deadlines are still open. `production` uses the real date and rejects overrides |
 | `BUSINESS_DATE_OVERRIDE` | (empty) | Demo mode only: `YYYY-MM-DD` or `today` |
-| `SESSION_RATE_LIMIT` | `10/600` | New conversations per client per window (count/seconds) |
-| `MESSAGE_RATE_LIMIT` | `30/60` | Messages and actions per client per window |
+| `SESSION_RATE_LIMIT` | `30/600` | New conversations per client per window (count/seconds) |
+| `MESSAGE_RATE_LIMIT` | `60/60` | Messages and actions per client per window |
 
 ## How it works
 

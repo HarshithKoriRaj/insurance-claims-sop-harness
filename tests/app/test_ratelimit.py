@@ -15,7 +15,13 @@ def test_a_sliding_window_allows_the_limit_then_refuses_until_it_slides():
 
 
 def test_parse_limit():
-    assert parse_limit("10/600") == (10, 600.0)
+    assert parse_limit("30/600") == (30, 600.0)
+
+
+def test_a_refusal_says_how_long_until_the_oldest_request_leaves_the_window():
+    limiter = RateLimiter(1, 600)
+    assert limiter.check("a", now=100) == 0
+    assert limiter.check("a", now=160) == 540
 
 
 def test_the_api_returns_429_past_the_limits(tmp_path):
@@ -28,7 +34,9 @@ def test_the_api_returns_429_past_the_limits(tmp_path):
     client = TestClient(create_app(build_runtime(settings)))
     first = client.post("/api/sessions").json()
     assert client.post("/api/sessions").status_code == 201
-    assert client.post("/api/sessions").status_code == 429
+    refused = client.post("/api/sessions")
+    assert refused.status_code == 429
+    assert refused.headers["Retry-After"] == "600" and "about 10 minutes" in refused.json()["detail"]
     headers = {"Authorization": f"Bearer {first['token']}"}
     path = f"/api/sessions/{first['session_id']}/messages"
     codes = [client.post(path, json={"text": "hello"}, headers=headers).status_code for _ in range(4)]
