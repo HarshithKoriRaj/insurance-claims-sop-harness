@@ -62,6 +62,8 @@ The assistant:
 
 **Full end-to-end story:** [docs/demo-story.md](docs/demo-story.md) has five conversations covering every requirement, to click through or run with `python3 scripts/story.py [URL]` (32 checks).
 
+**Demo and submission document:** [docs/Claims-Assistant-Demo.docx](docs/Claims-Assistant-Demo.docx). Regenerate it with `uv run --with python-docx python scripts/make_demo_docx.py`; run it with `--help` for options such as `--author`.
+
 Other scenarios worth trying:
 
 | Try | Expected |
