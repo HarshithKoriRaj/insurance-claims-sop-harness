@@ -126,6 +126,14 @@ note = doc.add_paragraph()
 note.add_run("Note: ").bold = True
 note.add_run("the live demo runs on Render's free plan. After 15 minutes without visitors it sleeps, and the first page load "
              "takes about a minute to wake it. Everything after that is normal speed.")
+video = doc.add_paragraph()
+video.add_run("About the demo video: ").bold = True
+video.add_run(
+    "due to lack of time I was not able to record a video walkthrough. To make up for it, every scenario is reproducible: "
+    "docs/demo-story.md gives the exact messages to type and what to expect at each step, and scripts/story.py replays "
+    "the same conversations against the live site and checks 32 expected outcomes automatically in about two minutes. "
+    "The table under “Expected and observed behavior” below records what those runs showed."
+)
 
 # ------------------------------------------------------------------ what it does
 doc.add_heading("What it does", level=1)
@@ -157,6 +165,58 @@ for step in [
     bullet(step, style="List Number")
 doc.add_paragraph("To check everything automatically — five conversations, 32 checks, exit code 0 when all pass:")
 code(f"python3 scripts/story.py {LIVE}")
+
+# ------------------------------------------------------------------ expected vs observed
+doc.add_heading("Expected and observed behavior", level=1)
+doc.add_paragraph(
+    "Each row is a requirement from the assignment, the behavior it calls for, and what the system actually did when the "
+    "scenario was run against the real model (gpt-4.1-mini). Every row matched. The same checks are automated in "
+    "scripts/story.py, which passed all 32 checks on repeated runs."
+)
+table([
+    ["Scenario", "Expected", "Observed", "Match"],
+    ["Assignment test: Margaret Chen gives name, policy number, DOB, SSN last 4 and “denied healthcare claim from January” in one message",
+     "Verify; disclose nothing before verification; resolve to claim CL-2048 from the stored hint",
+     "Verified from name, DOB and SSN last 4 (policy number ignored); went straight to CL-2048 without asking which claim; gave the denial reason, "
+     "the documents needed and the appeal deadline (March 18, 2026, 17 days away)", "Yes"],
+    ["Partial answers before verification",
+     "No claim information until 3 fields match; ask for what is missing",
+     "After the name, and after name and DOB, replies asked for more details and mentioned no claim, amount or date; the panel showed 1 of 3, then 2 of 3", "Yes"],
+    ["Alternate identity field",
+     "Any 3 of the 5 fields verify, not just the SSN",
+     "Verified with name, DOB and email, with no SSN", "Yes"],
+    ["Refusal to share the SSN",
+     "Empathize, explain why verification matters, offer alternatives, then a human",
+     "Explained that verification protects her claim information and offered DOB, phone or email; a second refusal offered a human", "Yes"],
+    ["Ambiguous date of birth (03/04/1985)",
+     "Clarify; never guess",
+     "Asked whether she meant March 4 or April 3, 1985, and did not accept the date until she clarified", "Yes"],
+    ["Wrong SSN three times",
+     "Say only that verification failed; stop after 3 attempts; never bypass the gate",
+     "“Couldn't verify” without naming the wrong detail; attempts counted 1, 2, 3; then a human was requested, and even the correct SSN no longer verified", "Yes"],
+    ["National ID entered as an SSN (Ma Tian)",
+     "A national ID never counts as an SSN",
+     "Not verified with 6688 as SSN; verified with name, DOB and phone, showing only her own claim CL-3001", "Yes"],
+    ["Another customer's claim (CL-3001 asked by Margaret)",
+     "Only the caller's own claims; answers only from claim data",
+     "“I don't see any claim CL-3001 on your account” — identical to a missing claim — and listed only her four claims", "Yes"],
+    ["Messy language",
+     "Interpret freely, answer only from claim data and approved guidance",
+     "“ok what about my car claim” switched to CL-2102; “how long does it take after I send stuff” got the approved processing-time guidance", "Yes"],
+    ["Frustration",
+     "Empathize first",
+     "“I understand this is frustrating, Margaret”, then the approved guidance for a document she can't get", "Yes"],
+    ["Out-of-scope questions (“What is RL?”) repeated",
+     "Decline politely; after repeated attempts, offer a human",
+     "Declined; the second time offered a human; the third time requested a human representative (simulated)", "Yes"],
+    ["Email summary",
+     "Summary of the discussion, claim status or outcome and next steps; the caller chooses send or skip",
+     "Preview showed topics, status, reason, documents, deadline and next steps to the masked address; Send delivered it once "
+     "(Mailpit inbox locally); Skip sent nothing", "Yes"],
+    ["UI and setup",
+     "A simple chat UI showing all four phases; setup accepts an API token",
+     "Four-phase stepper and session panel; OPENAI_API_KEY or ANTHROPIC_API_KEY via .env or a Render secret", "Yes"],
+])
 
 # ------------------------------------------------------------------ architecture
 doc.add_heading("Architecture", level=1)
@@ -280,8 +340,25 @@ for lead, text in [
      "failed attempts stop automated verification."),
     ("Public-demo guards:", "per-client rate limits protect the model budget; keys live only in environment secrets, and the full git "
      "history was scanned before the repository went public."),
-    ("Tests:", "301 automated tests (offline, deterministic), 6 live-model scenario tests, and the 32-check end-to-end story; "
+    ("Tests:", "306 automated tests (offline, deterministic), 6 live-model scenario tests, and the 32-check end-to-end story; "
      "CI runs on every push and publishes the Docker image."),
+]:
+    bullet(text, bold_lead=lead)
+
+doc.add_heading("Engineering quality", level=1)
+doc.add_paragraph("The code is complete, and every claim in this document can be checked in the repository:")
+for lead, text in [
+    ("Typed end to end.", "Python 3.13 with strict Pydantic contracts for every fixture file and Pydantic validation of every model "
+     "output; TypeScript in strict mode for the UI."),
+    ("Tested at three levels.", "306 deterministic tests that run in about 2 seconds without a model, 6 scenario tests against the real "
+     "model, and the 32-check end-to-end story; mutation checks confirmed the key tests fail when the rule they guard is removed."),
+    ("Reviewed.", "Every Milestone 1 task went through a specification review and a code-quality review; a dedicated security review of "
+     "the verification and consent rules found one real issue (a double click could send the summary twice), which was fixed "
+     "with a regression test."),
+    ("Rehearsed against the real model.", "Every demo line was run live before being documented; the issues that surfaced (a model "
+     "reformatting a date, reading a name out of an email address) were fixed in code and covered by tests."),
+    ("Current stack.", "FastAPI, React with TypeScript, OpenAI or Claude as interchangeable providers, Docker images published by "
+     "GitHub Actions, and a Render deployment defined as code."),
 ]:
     bullet(text, bold_lead=lead)
 
