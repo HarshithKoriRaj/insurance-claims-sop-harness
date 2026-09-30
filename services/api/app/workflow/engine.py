@@ -188,6 +188,8 @@ class WorkflowEngine:
             result = normalize(identity_field, raw, self.policy)
             if result.value is not None:
                 state.evidence[identity_field] = result.value
+            elif result.problem is Problem.INCOMPLETE and identity_field in state.evidence:
+                continue  # a partial repeat of a detail already given, such as just a first name
             elif result.problem is Problem.AMBIGUOUS and result.candidates:
                 problems[FIELD_LABELS[identity_field]] = "could be read two ways: " + " or ".join(
                     _spoken_date(c) for c in result.candidates

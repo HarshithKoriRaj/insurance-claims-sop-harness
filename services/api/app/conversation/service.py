@@ -14,6 +14,7 @@ from app.claims.guidance import GuidanceLibrary
 from app.contracts.fixtures import Policyholder
 from app.conversation.interpretation import IdentityMention, Interpretation, rule_interpret
 from app.conversation.templates import template_reply
+from app.identity.normalize import normalize_dob
 from app.workflow.engine import Brief
 from app.workflow.state import SessionState
 
@@ -29,7 +30,7 @@ SITUATION_GUIDE = {
     "identity_refusal": "Empathize, explain that verification protects their claim information, offer the alternative identity details, and offer a human if offer_human.",
     "representative": "Explain you can only verify the policyholder directly; acting for someone else needs their authorization, which a human representative can arrange. Offer to request one.",
     "out_of_scope": "Politely decline: you can only help with insurance claims and this conversation. Steer back to the task. Offer a human representative if offer_human.",
-    "handoff": "Say a human representative has been requested (not connected). Mention that in this demo the transfer is simulated.",
+    "handoff": "Say clearly that you HAVE requested a human representative to take over this conversation (requested, not connected), give the reason from notes in a few words (the caller asked, repeated off-topic requests, or the verification attempt limit), and mention that in this demo the transfer is simulated. Do not ask for identity details or anything else.",
     "handoff_waiting": "Say a human representative was already requested and the transfer is simulated in this demo.",
     "closed": "Say this conversation has ended and they can start a new one.",
     "goodbye": "Thank the caller and close warmly.",
@@ -37,9 +38,9 @@ SITUATION_GUIDE = {
     "choose_case": "Confirm verification if just_verified. List the candidate claims, each with its case_id, type, filing date and status, and ask which one they mean.",
     "no_matching_case": "Confirm verification if just_verified. Say no claim on the account matches that description; list their claims with each case_id if any.",
     "answer": "Confirm verification if just_verified. Name the claim by its case_id (for example 'claim CL-2048') so the caller knows which one you mean. Answer the caller's question using only facts and guidance: if case_selected is in notes, give the status, the reason, the documents needed and the appeal deadline (days remaining from business_date); otherwise answer just the follow-up question. End by asking if they need anything else.",
-    "summary_offer": "Offer to email the summary shown in the chat to the masked recipient; they can choose Send summary or Skip.",
+    "summary_offer": "The conversation is NOT over yet: do not say goodbye. Ask whether they would like the summary shown in the chat emailed to the masked recipient, and say they can choose Send summary or Skip (or just answer yes or no). Write the address only in its masked form from the brief, never in full.",
     "summary_offer_repeat": "Ask again whether to send or skip the summary email.",
-    "summary_sent": "Confirm the summary was sent to the masked recipient and close warmly. If notes contain no_mail_server, say instead that it was recorded but not delivered to an inbox because this demo deployment has no mail server.",
+    "summary_sent": "Confirm the summary was sent to the masked recipient (write the address only in its masked form) and close warmly. If notes contain no_mail_server, say instead that it was recorded but not delivered to an inbox because this demo deployment has no mail server.",
     "summary_skipped": "Confirm no summary will be sent and close warmly.",
     "summary_send_failed": "Say the summary could not be sent and nothing was sent; they can retry or skip.",
 }
@@ -53,22 +54,54 @@ _MONTH_WORDS = (
 )
 
 
+_EMAIL_ADDRESS = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_DATE_IN_TEXT = re.compile(
+    r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}"
+    r"|[0-9]{1,2}[/.-][0-9]{1,2}[/.-][0-9]{2,4}"
+    r"|[A-Za-z]+\.? [0-9]{1,2}(?:st|nd|rd|th)?,? [0-9]{4}"
+    r"|[0-9]{1,2}(?:st|nd|rd|th)? (?:of )?[A-Za-z]+,? [0-9]{4}"
+)
+
+
 def _alnum(value: str) -> str:
     return re.sub(r"[\W_]+", "", value.casefold())
 
 
+def _name_in_text(name: str, text: str) -> bool:
+    # Whole words only, and never from inside an email address ("margaret@…" is not a name).
+    without_emails = _EMAIL_ADDRESS.sub(" ", text).casefold()
+    words = re.findall(r"[^\W\d_]+", name.casefold())
+    return bool(words) and all(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", without_emails) for word in words)
+
+
+def _date_in_text(value: str, text: str) -> bool:
+    # The model may reformat a date ("March 15, 1985" as "1985-03-15"); keep it only if it is
+    # the same day as a date actually written in the message.
+    wanted = normalize_dob(value).value
+    return wanted is not None and any(normalize_dob(found).value == wanted for found in _DATE_IN_TEXT.findall(text))
+
+
 def grounded(interp: Interpretation, text: str, offer_active: bool) -> Interpretation:
     """The model proposes; the caller's own words decide. Identity values and specific claim
-    hints the message does not actually contain are dropped (a model filling in a year or
-    "completing" an email must not change what gets verified or which claim is chosen). For a
-    dropped identity field, the deterministic rule reading of the message is used instead."""
+    hints the message does not actually contain are dropped (a model filling in a year,
+    "completing" an email, or reading a name out of an address must not change what gets
+    verified or which claim is chosen). For a dropped identity field, the deterministic rule
+    reading of the message is used instead."""
     haystack = _alnum(text)
     lowered = text.casefold()
     rules = rule_interpret(text, summary_offer_active=offer_active)
     identity = {}
     for field in ("full_name", "dob", "phone", "email", "ssn_last4"):
         value = getattr(interp.identity, field)
-        if value and _alnum(value) and _alnum(value) in haystack:
+        if not value or not _alnum(value):
+            ok = False
+        elif field == "full_name":
+            ok = _name_in_text(value, text)
+        elif field == "dob":
+            ok = _alnum(value) in haystack or _date_in_text(value, text)
+        else:
+            ok = _alnum(value) in haystack
+        if ok:
             identity[field] = value
         elif getattr(rules.identity, field):
             identity[field] = getattr(rules.identity, field)

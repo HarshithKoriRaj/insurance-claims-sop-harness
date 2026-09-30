@@ -26,9 +26,9 @@ def test_identity_values_must_appear_in_the_message():
     assert identity == {"full_name": "Margaret Chen", "dob": "1985-03-15"}
 
 
-def test_a_reformatted_value_falls_back_to_the_rule_reading():
+def test_an_unusable_model_value_falls_back_to_the_rule_reading():
     text = "I was born March 15, 1985"
-    identity = grounded(Interpretation(identity=IdentityMention(dob="1985-03-15")), text, False).identity.present()
+    identity = grounded(Interpretation(identity=IdentityMention(dob="the fifteenth")), text, False).identity.present()
     assert identity == {"dob": "March 15, 1985"}
 
 
@@ -37,3 +37,26 @@ def test_the_committed_env_template_holds_no_real_key():
     for line in template.splitlines():
         if line.startswith(("OPENAI_API_KEY=", "ANTHROPIC_API_KEY=")):
             assert line.split("=", 1)[1].strip() == "", "a real key must never be committed in .env.example"
+
+
+def test_a_reformatted_date_is_kept_when_it_is_the_same_day_as_one_in_the_message():
+    text = "Sorry, I meant March 15, 1985"
+    identity = grounded(Interpretation(identity=IdentityMention(dob="1985-03-15")), text, False).identity.present()
+    assert identity == {"dob": "1985-03-15"}
+
+
+def test_a_date_on_a_different_day_is_still_dropped():
+    identity = grounded(Interpretation(identity=IdentityMention(dob="1985-03-16")), "I meant March 15, 1985", False).identity.present()
+    assert identity == {}
+
+
+def test_a_name_read_out_of_an_email_address_is_dropped():
+    text = "You can use my email instead: margaret@email.com"
+    model = Interpretation(identity=IdentityMention(full_name="Margaret", email="margaret@email.com"))
+    assert grounded(model, text, False).identity.present() == {"email": "margaret@email.com"}
+
+
+def test_a_name_from_the_assistant_s_own_words_is_dropped_but_a_stated_name_is_kept():
+    assert grounded(Interpretation(identity=IdentityMention(full_name="Margaret")), "Sorry, I meant March 15, 1985", False).identity.present() == {}
+    kept = grounded(Interpretation(identity=IdentityMention(full_name="Margaret Chen")), "Hi, I'm Margaret Chen", False)
+    assert kept.identity.present() == {"full_name": "Margaret Chen"}

@@ -214,3 +214,15 @@ def test_without_a_mail_server_the_summary_is_recorded_not_claimed_as_emailed(tm
     view = client.post(f"{path}/actions", json={"action": "send_summary"}, headers=headers).json()["view"]
     assert view["summary"]["status"] == "sent" and view["summary"]["delivered"] is False
     assert "wasn't delivered" in view["messages"][-1]["text"]
+
+
+def test_a_partial_repeat_of_an_accepted_name_is_not_reported_as_a_problem(runtime):
+    from datetime import UTC, datetime
+
+    from app.conversation.interpretation import IdentityMention, Interpretation
+    from app.workflow.state import SessionState
+
+    now = datetime.now(UTC)
+    state = SessionState(session_id="s", created_at=now, last_activity_at=now, evidence={"full_name": "margaretchen"})
+    brief = runtime.engine.on_message(state, Interpretation(identity=IdentityMention(full_name="Margaret", email="margaret@email.com")), now)
+    assert brief.problems == {} and state.evidence["full_name"] == "margaretchen" and "email" in state.evidence
