@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { CircleAlert, RotateCcw, ShieldCheck, X } from 'lucide-react'
 import {
   ApiError,
   createSession,
@@ -13,6 +14,10 @@ import PhaseStepper from './PhaseStepper'
 import Chat from './Chat'
 import SummaryCard from './SummaryCard'
 import Inspector from './Inspector'
+import GitHubMark from './GitHubMark'
+import { formatBusinessDate } from './format'
+
+const SOURCE_URL = 'https://github.com/HarshithKoriRaj/insurance-claims-sop-harness'
 
 function describeError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -24,6 +29,15 @@ function describeError(err: unknown): string {
   return 'Something went wrong. Please try again.'
 }
 
+function BrandMark({ large = false, loading = false }: { large?: boolean; loading?: boolean }) {
+  const classes = ['brand__mark', large ? 'brand__mark--lg' : '', loading ? 'is-loading' : '']
+  return (
+    <span className={classes.filter(Boolean).join(' ')} aria-hidden="true">
+      <ShieldCheck size={large ? 26 : 20} strokeWidth={2.25} />
+    </span>
+  )
+}
+
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [token, setToken] = useState<string | null>(null)
@@ -32,6 +46,7 @@ export default function App() {
   const [bootError, setBootError] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
+  const [sendingText, setSendingText] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   async function applyNewSession(): Promise<void> {
@@ -125,12 +140,15 @@ export default function App() {
 
     setPending(true)
     setDraft('')
+    setSendingText(text)
     try {
       const { view: newView } = await postMessage(sessionId, token, text)
       setView(newView)
     } catch (err) {
+      setSendingText(null)
       await handleMutationError(err, text)
     } finally {
+      setSendingText(null)
       setPending(false)
     }
   }
@@ -163,19 +181,29 @@ export default function App() {
 
   if (booting) {
     return (
-      <div className="app app--boot">
-        <p>Loading&#8230;</p>
+      <div className="boot">
+        <div className="boot__panel">
+          <BrandMark large loading />
+          <p className="boot__title">Claims Assistant</p>
+          <p className="boot__text" role="status">
+            Loading&#8230;
+          </p>
+        </div>
       </div>
     )
   }
 
   if (bootError || !view || !sessionId || !token) {
     return (
-      <div className="app app--boot">
-        <div className="boot-error">
-          <h1>Claims Assistant</h1>
-          <p role="alert">{bootError ?? 'Could not load a conversation.'}</p>
-          <button type="button" className="button" onClick={() => void bootstrap()}>
+      <div className="boot">
+        <div className="boot__panel card">
+          <BrandMark large />
+          <h1 className="boot__title">Claims Assistant</h1>
+          <p className="boot__error" role="alert">
+            {bootError ?? 'Could not load a conversation.'}
+          </p>
+          <button type="button" className="btn btn--primary" onClick={() => void bootstrap()}>
+            <RotateCcw size={16} aria-hidden="true" />
             Retry
           </button>
         </div>
@@ -185,92 +213,92 @@ export default function App() {
 
   const canRequestHuman = view.available_actions.includes('request_human')
   const canEndConversation = view.available_actions.includes('end_conversation')
+  const canSendSummary = view.available_actions.includes('send_summary')
+  const canSkipSummary = view.available_actions.includes('skip_summary')
 
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="app-header__row">
-          <h1 className="app-header__title">Claims Assistant</h1>
-          <button type="button" className="button button--secondary" onClick={() => void handleNewConversation()}>
-            New conversation
-          </button>
+      <header className="topbar">
+        <div className="topbar__inner">
+          <div className="brand">
+            <BrandMark />
+            <div className="brand__text">
+              <h1 className="brand__title">Claims Assistant</h1>
+              <p className="brand__subtitle">Insurance claims support · SOP demo</p>
+            </div>
+          </div>
+
+          <div className="topbar__actions">
+            <a className="btn btn--ghost" href={SOURCE_URL} target="_blank" rel="noopener noreferrer" title="View source">
+              <GitHubMark size={16} />
+              <span className="btn__label">View source</span>
+              <span className="visually-hidden"> (opens in a new tab)</span>
+            </a>
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={() => void handleNewConversation()}
+              title="New conversation"
+            >
+              <RotateCcw size={16} aria-hidden="true" />
+              <span className="btn__label">New conversation</span>
+            </button>
+          </div>
         </div>
-        <PhaseStepper phase={view.phase} />
       </header>
 
-      {view.lifecycle === 'HANDOFF_PENDING' && (
-        <div className="banner banner--info" role="status">
-          A human representative has been requested. In this demo the transfer is simulated.
-        </div>
-      )}
+      <main className="workspace">
+        <PhaseStepper phase={view.phase} settled={view.lifecycle === 'CLOSED'} />
 
-      {view.lifecycle === 'CLOSED' && (
-        <div className="banner banner--closed" role="status">
-          <span>This conversation has ended.</span>
-          <button type="button" className="button" onClick={() => void handleNewConversation()}>
-            Start a new conversation
-          </button>
-        </div>
-      )}
-
-      <div className="layout">
-        <main className="chat-column">
-          {(canRequestHuman || canEndConversation) && (
-            <div className="actions-row" role="group" aria-label="Conversation actions">
-              {canRequestHuman && (
-                <button
-                  type="button"
-                  className="button button--secondary"
-                  onClick={() => void handleAction('request_human')}
-                  disabled={pending}
-                >
-                  Talk to a human
-                </button>
-              )}
-              {canEndConversation && (
-                <button
-                  type="button"
-                  className="button button--secondary"
-                  onClick={() => void handleAction('end_conversation')}
-                  disabled={pending}
-                >
-                  End conversation
-                </button>
-              )}
-            </div>
-          )}
-
-          <Chat
-            messages={view.messages}
-            pending={pending}
-            disabled={view.lifecycle === 'CLOSED'}
-            draft={draft}
-            onDraftChange={setDraft}
-            onSend={() => void handleSend()}
-            footerSlot={
-              <SummaryCard
-                summary={view.summary}
-                pending={pending}
-                onSendSummary={() => void handleAction('send_summary')}
-                onSkipSummary={() => void handleAction('skip_summary')}
-              />
-            }
-          />
-        </main>
+        <Chat
+          messages={view.messages}
+          phase={view.phase}
+          lifecycle={view.lifecycle}
+          modelMode={view.model_mode}
+          summaryOffered={view.summary.status === 'offered'}
+          canRequestHuman={canRequestHuman}
+          canEndConversation={canEndConversation}
+          pending={pending}
+          sendingText={sendingText}
+          draft={draft}
+          onDraftChange={setDraft}
+          onSend={() => void handleSend()}
+          onRequestHuman={() => void handleAction('request_human')}
+          onEndConversation={() => void handleAction('end_conversation')}
+          onNewConversation={() => void handleNewConversation()}
+          footerSlot={
+            <SummaryCard
+              summary={view.summary}
+              pending={pending}
+              canSend={canSendSummary}
+              canSkip={canSkipSummary}
+              onSendSummary={() => void handleAction('send_summary')}
+              onSkipSummary={() => void handleAction('skip_summary')}
+            />
+          }
+        />
 
         <Inspector view={view} />
-      </div>
+      </main>
+
+      <footer className="footer">
+        <p>
+          Demo data only. The business date is pinned to {formatBusinessDate(view.business_date)}; human handoff is
+          simulated.
+        </p>
+      </footer>
 
       {errorMessage && (
         <div className="toast" role="alert">
-          <span>{errorMessage}</span>
+          <CircleAlert className="toast__icon" size={18} aria-hidden="true" />
+          <p className="toast__text">{errorMessage}</p>
           <button
             type="button"
             className="toast__dismiss"
             onClick={() => setErrorMessage(null)}
             aria-label="Dismiss error"
           >
-            &times;
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
       )}
