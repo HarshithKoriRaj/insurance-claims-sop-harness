@@ -60,6 +60,8 @@ The assistant:
 3. Explains the denial, the documents needed, and the appeal deadline. The deadline is **17 days** away on the pinned demo date, 2026-03-01.
 4. When she's done, offers the summary email with **Send summary** / **Skip**.
 
+**Full end-to-end story:** [docs/demo-story.md](docs/demo-story.md) has five conversations covering every requirement, to click through or run with `python3 scripts/story.py [URL]` (32 checks).
+
 Other scenarios worth trying:
 
 | Try | Expected |
