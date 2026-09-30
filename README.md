@@ -2,7 +2,7 @@
 
 A chat agent for insurance claims support that follows a standard operating procedure in four phases. An LLM (OpenAI or Claude, whichever key you provide) reads each message and words each reply. Deterministic code decides everything in between: who the caller is, what they may see, and what happens next.
 
-**Live demo:** https://claims-assistant-4wy7.onrender.com. It runs on Render's free plan: the first visit after 15 idle minutes takes about a minute to wake. Click **Try the demo** under the chat box.
+**Live demo:** https://claims-assistant-4wy7.onrender.com. It runs on Render's free plan: the first visit after 15 idle minutes takes about a minute to wake. Click the **Demo: Margaret Chen** suggestion above the message box.
 
 | Phase | What happens | Gate to leave it |
 |---|---|---|
@@ -50,7 +50,7 @@ Without an API key the app still works, in a rule-based offline mode. The inspec
 
 ### Try the demo script
 
-Click **Try the demo** under the input box, or paste:
+Click the **Demo: Margaret Chen** suggestion above the message box, or paste:
 
 > I'm the policyholder. My name is Margaret Chen, policy POL-9921. I'm calling about my denied healthcare claim from January. DOB is 1985-03-15, SSN last four is 4472.
 
